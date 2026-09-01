@@ -19,7 +19,7 @@ function load(file, exports) {
 const Schema = load("Schema.js", [
   "DIRECTIONS", "COVERAGE", "ACTIONS", "MODES", "MODIFIERS", "TUNABLES",
   "FINGERS_MIN", "FINGERS_MAX", "tunableFor", "isValidDirection", "isValidAction",
-  "actionFields", "badModifier"
+  "actionFields", "badModifier", "defaultMode"
 ])
 const Lua = load("LuaGestures.js", [
   "BEGIN_FENCE", "END_FENCE", "renderGesture", "renderTunables", "renderBody",
@@ -88,6 +88,17 @@ check("omits empty optional fields",
 check("includes optional fields when set",
   Lua.renderGesture({ fingers: 4, direction: "up", action: "fullscreen", mode: "maximize", mods: "SUPER" })
     === 'hl.gesture({ fingers = 4, direction = "up", action = "fullscreen", mode = "maximize", mods = "SUPER" })')
+
+// A mode written by hand must survive being read into a dropdown and written
+// back out. An empty option value cannot represent "fullscreen", so there is
+// none: every mode is explicit.
+check("no mode option has an empty value",
+  Schema.MODES.every(m => m.value !== ""))
+check("defaultMode is one of the offered modes",
+  Schema.MODES.some(m => m.value === Schema.defaultMode()))
+check("an explicit fullscreen mode is written, not dropped",
+  Lua.renderGesture({ fingers: 4, direction: "up", action: "fullscreen", mode: "fullscreen" })
+    .indexOf('mode = "fullscreen"') !== -1)
 
 check("escapes quotes and backslashes in Lua strings",
   Lua.luaString('a"b\\c') === '"a\\"b\\\\c"',
@@ -250,6 +261,15 @@ if (!lua) {
     JSON.stringify(hostileState.gestures))
   check("rendering a hostile name executes nothing",
     !fs.existsSync(path.join(root, "test", "PWNED")))
+
+  // The regression that prompted this: a hand-written `mode = "fullscreen"`
+  // read in, then written back, must come out byte-for-byte the same gesture.
+  const original = 'hl.gesture({ fingers = 4, direction = "up", action = "fullscreen", mode = "fullscreen" })'
+  const readBack = Lua.parseHarness(
+    execFileSync("lua", [path.join(root, "read.lua"), "-e", original], { encoding: "utf8" }))
+  const reRendered = Lua.renderGesture(readBack.gestures[0])
+  check("a hand-written fullscreen mode survives a full round trip",
+    reRendered === original, "got " + reRendered)
 
   // A file that is not valid Lua must fail loudly rather than read as empty.
   let threw = false

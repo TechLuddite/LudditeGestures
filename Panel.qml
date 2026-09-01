@@ -115,7 +115,11 @@ Item {
       // A callback gesture inside the fence is not something the panel wrote,
       // and not something it can edit. Leave it to the hand-written list.
       if (parsed.gestures[i].custom) { root.unmanagedBefore.push(parsed.gestures[i]); continue }
-      next.push(copyGesture(parsed.gestures[i]))
+      var g = copyGesture(parsed.gestures[i])
+      // Hyprland accepts a fullscreen gesture with no mode; the dropdown needs
+      // one to show, and writing it back explicitly changes nothing.
+      if (Schema.actionFields(g.action).indexOf("mode") !== -1 && !g.mode) g.mode = Schema.defaultMode()
+      next.push(g)
     }
 
     var t = {}
@@ -143,6 +147,7 @@ Item {
     if (field === "action") {
       var fields = Schema.actionFields(value)
       if (fields.indexOf("mode") === -1) next[index].mode = ""
+      else if (!next[index].mode) next[index].mode = Schema.defaultMode()
       if (fields.indexOf("workspace_name") === -1) next[index].workspace_name = ""
     }
     root.gestures = next

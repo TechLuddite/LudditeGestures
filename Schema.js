@@ -49,11 +49,17 @@ var ACTIONS = [
   { value: "resize",     label: "Resize window",      fields: [] }
 ]
 
-// Only meaningful for action = "fullscreen".
+// Only meaningful for action = "fullscreen". Both values are written out
+// explicitly rather than leaning on Hyprland's default for an omitted mode:
+// a hand-written `mode = "fullscreen"` must survive a round trip through the
+// panel unchanged, and an empty option value could not represent it.
 var MODES = [
-  { value: "",           label: "Fullscreen (default)" },
+  { value: "fullscreen", label: "Fullscreen" },
   { value: "maximize",   label: "Maximize" }
 ]
+
+// What a mode-taking action gets when it has none yet.
+function defaultMode() { return "fullscreen" }
 
 var MODIFIERS = ["SUPER", "SHIFT", "ALT", "CTRL"]
 
