@@ -18,8 +18,12 @@ function load(file, exports) {
 
 const Schema = load("Schema.js", [
   "DIRECTIONS", "COVERAGE", "ACTIONS", "MODES", "MODIFIERS", "TUNABLES",
-  "FINGERS_MIN", "FINGERS_MAX", "tunableFor", "isValidDirection", "isValidAction",
-  "actionFields", "badModifier", "defaultMode"
+  "FINGERS_MIN", "FINGERS_MAX", "SCALE_MIN", "SCALE_MAX",
+  "FIELDS", "FIELD_NAMES", "DIRECTION_ALIASES",
+  "tunableFor", "isValidDirection", "isValidAction",
+  "actionFields", "badModifier", "defaultMode", "canonicalDirection",
+  "fieldDefault", "fieldEmpty", "fieldSpec", "modsToList", "modsFromList",
+  "directionLabel", "actionLabel"
 ])
 const Lua = load("LuaGestures.js", [
   "BEGIN_FENCE", "END_FENCE", "renderGesture", "renderTunables", "renderBody",
@@ -41,17 +45,23 @@ function check(name, condition, detail) {
 // ---------------------------------------------------------------------------
 console.log("\nshadow lattice (measured from Hyprland 0.56.2)")
 
-const D = ["left", "right", "up", "down", "horizontal", "vertical", "pinch", "swipe"]
+// Measured one pair at a time with `hyprctl reload` between every cell: a
+// registration that succeeds stays live and shadows the next probe, so a whole
+// row read in one pass reports the wrong previous gesture.
+const D = ["left", "right", "up", "down", "horizontal", "vertical", "swipe",
+           "pinch", "pinchin", "pinchout"]
 const MEASURED = {
-  //           left right up   down horiz vert pinch swipe
-  left:       [1,   0,    0,   0,   0,    0,   0,    0],
-  right:      [0,   1,    0,   0,   0,    0,   0,    0],
-  up:         [0,   0,    1,   0,   0,    0,   0,    0],
-  down:       [0,   0,    0,   1,   0,    0,   0,    0],
-  horizontal: [1,   1,    0,   0,   1,    0,   0,    0],
-  vertical:   [0,   0,    1,   1,   0,    1,   0,    0],
-  pinch:      [0,   0,    0,   0,   0,    0,   1,    0],
-  swipe:      [1,   1,    1,   1,   1,    1,   0,    1],
+  //           left right up   down horiz vert swipe pinch pIn  pOut
+  left:       [1,   0,    0,   0,   0,    0,   0,    0,    0,   0],
+  right:      [0,   1,    0,   0,   0,    0,   0,    0,    0,   0],
+  up:         [0,   0,    1,   0,   0,    0,   0,    0,    0,   0],
+  down:       [0,   0,    0,   1,   0,    0,   0,    0,    0,   0],
+  horizontal: [1,   1,    0,   0,   1,    0,   0,    0,    0,   0],
+  vertical:   [0,   0,    1,   1,   0,    1,   0,    0,    0,   0],
+  swipe:      [1,   1,    1,   1,   1,    1,   1,    0,    0,   0],
+  pinch:      [0,   0,    0,   0,   0,    0,   0,    1,    1,   1],
+  pinchin:    [0,   0,    0,   0,   0,    0,   0,    0,    1,   0],
+  pinchout:   [0,   0,    0,   0,   0,    0,   0,    0,    0,   1],
 }
 
 function coversPair(prev, next) {
@@ -73,6 +83,46 @@ for (const prev of D) {
 check("coverage sets reproduce every cell of the measured lattice", latticeOk, latticeDetail)
 check("every direction in the dropdown has a coverage set",
   Schema.DIRECTIONS.every(d => Array.isArray(Schema.COVERAGE[d.value])))
+check("the dropdown offers every direction the lattice was measured on",
+  D.every(d => Schema.DIRECTIONS.some(o => o.value === d))
+    && Schema.DIRECTIONS.length === D.length)
+check("swipe covers no pinch, and neither pinch half covers the other",
+  Schema.COVERAGE.swipe.indexOf("pinchin") === -1
+    && Schema.COVERAGE.pinchin.indexOf("pinchout") === -1
+    && Schema.COVERAGE.pinch.indexOf("pinchout") !== -1)
+
+// ---------------------------------------------------------------------------
+// Hyprland's parser is case-insensitive and takes short forms. A config written
+// by hand can say `direction = "l"`; before these, that read as an unknown
+// direction, which both blocked the save and hid every conflict it was in.
+console.log("\ndirection aliases (measured from the canonical name Hyprland reports back)")
+
+const ALIASES = {
+  l: "left", r: "right", u: "up", d: "down",
+  L: "left", R: "right", U: "up", D: "down",
+  LEFT: "left", Horizontal: "horizontal",
+  horiz: "horizontal", vert: "vertical", VERT: "vertical",
+  zoomin: "pinchin", zoomout: "pinchout",
+}
+let aliasOk = true, aliasDetail = ""
+for (const [written, canonical] of Object.entries(ALIASES)) {
+  if (Schema.canonicalDirection(written) !== canonical) {
+    aliasOk = false
+    aliasDetail += `\n         ${written}: expected ${canonical}, got ${Schema.canonicalDirection(written)}`
+  }
+}
+check("every alias Hyprland accepts resolves to the name the panel offers", aliasOk, aliasDetail)
+check("an aliased direction is a valid direction",
+  Object.keys(ALIASES).every(a => Schema.isValidDirection(a)))
+check("an aliased direction still shadows what it covers",
+  Lua.findConflicts([
+    { fingers: 3, direction: "horiz", action: "workspace" },
+    { fingers: 3, direction: "l", action: "close" },
+  ], Schema).length === 1)
+check("an alias reads back with the label of the direction it names",
+  Schema.directionLabel("zoomin") === Schema.directionLabel("pinchin"))
+check("a direction that is not an alias is still rejected",
+  !Schema.isValidDirection("sideways") && !Schema.isValidDirection("hor"))
 
 // ---------------------------------------------------------------------------
 console.log("\nrendering")
@@ -99,6 +149,52 @@ check("defaultMode is one of the offered modes",
 check("an explicit fullscreen mode is written, not dropped",
   Lua.renderGesture({ fingers: 4, direction: "up", action: "fullscreen", mode: "fullscreen" })
     .indexOf('mode = "fullscreen"') !== -1)
+
+// The parser types these three differently, and gets each wrong if the other
+// shape is written: `field "scale": float type requires a number`, and
+// `field "zoom_level": string type requires a string`.
+check("scale is written as a bare Lua number, not a string",
+  Lua.renderGesture({ fingers: 3, direction: "pinch", action: "scroll_move", scale: 1.5 })
+    .indexOf("scale = 1.5") !== -1,
+  Lua.renderGesture({ fingers: 3, direction: "pinch", action: "scroll_move", scale: 1.5 }))
+check("zoom_level is written quoted, so a relative \"+0.5\" survives",
+  Lua.renderGesture({ fingers: 3, direction: "pinch", action: "cursor_zoom", zoom_level: "+0.5" })
+    .indexOf('zoom_level = "+0.5"') !== -1)
+check("disable_inhibit is carried through even though nothing edits it",
+  Lua.renderGesture({ fingers: 3, direction: "up", action: "close", disable_inhibit: true })
+    .indexOf("disable_inhibit = true") !== -1)
+check("an unset scale/zoom_level/disable_inhibit is omitted, not written empty",
+  Lua.renderGesture({ fingers: 3, direction: "up", action: "close",
+                      scale: 0, zoom_level: "", disable_inhibit: false })
+    === 'hl.gesture({ fingers = 3, direction = "up", action = "close" })')
+
+// Every action the compositor answers to, and only those. Probed with
+// `hyprctl eval` until it stopped saying `unknown action`.
+const MEASURED_ACTIONS = ["workspace", "move", "close", "fullscreen", "float",
+                          "special", "resize", "scroll_move", "cursor_zoom"]
+check("the panel offers every action Hyprland accepts",
+  MEASURED_ACTIONS.every(a => Schema.isValidAction(a)),
+  "missing: " + MEASURED_ACTIONS.filter(a => !Schema.isValidAction(a)).join(", "))
+check("the panel offers nothing Hyprland would reject",
+  Schema.ACTIONS.every(a => MEASURED_ACTIONS.indexOf(a.value) !== -1),
+  "extra: " + Schema.ACTIONS.map(a => a.value).filter(v => MEASURED_ACTIONS.indexOf(v) === -1).join(", "))
+check("every field an action asks for has a spec the row can draw",
+  Schema.ACTIONS.every(a => a.fields.every(f => Schema.fieldSpec(f) !== null)))
+check("every field with a spec is one the reset loop knows about",
+  Object.keys(Schema.FIELDS).every(f => Schema.FIELD_NAMES.indexOf(f) !== -1))
+check("fingers spans the range the parser allows",
+  Schema.FINGERS_MIN === 2 && Schema.FINGERS_MAX === 9)
+
+// The modifier control edits a list; the file holds one string. Round-tripping
+// has to be stable or an untouched gesture reads as an edit.
+check("modifiers round-trip through the list the control edits",
+  Schema.modsFromList(Schema.modsToList("SUPER+SHIFT")) === "SUPER+SHIFT")
+check("modifiers come back in a fixed order, not click order",
+  Schema.modsFromList(["SHIFT", "SUPER"]) === "SUPER+SHIFT")
+check("a space-separated modifier string reads the same as a plus-separated one",
+  Schema.modsFromList(Schema.modsToList("SUPER SHIFT")) === "SUPER+SHIFT")
+check("no modifiers renders as no field at all",
+  Schema.modsFromList([]) === "" && Schema.modsToList("").length === 0)
 
 check("escapes quotes and backslashes in Lua strings",
   Lua.luaString('a"b\\c') === '"a\\"b\\\\c"',
@@ -154,17 +250,31 @@ check("a file with a begin fence but no end fence is left alone",
 console.log("\nparsing read.lua output")
 
 const parsed = Lua.parseHarness([
-  ["g", "3", "horizontal", "workspace", "", "", "", "false"].join("\t"),
-  ["g", "4", "down", "custom", "", "", "", "true"].join("\t"),
+  ["g", "3", "horizontal", "workspace", "", "", "", "false", "", "", ""].join("\t"),
+  ["g", "4", "down", "custom", "", "", "", "true", "", "", ""].join("\t"),
+  ["g", "3", "pinch", "scroll_move", "", "", "", "false", "1.5", "", "true"].join("\t"),
   ["c", "workspace_swipe_distance", "number", "500"].join("\t"),
   ["c", "workspace_swipe_invert", "boolean", "false"].join("\t"),
 ].join("\n"))
 
-check("parses gestures", parsed.gestures.length === 2)
+check("parses gestures", parsed.gestures.length === 3)
 check("parses finger counts as numbers", parsed.gestures[0].fingers === 3)
 check("flags a callback gesture as custom", parsed.gestures[1].custom === true)
 check("parses numeric tunables", parsed.tunables.workspace_swipe_distance === 500)
 check("parses boolean tunables", parsed.tunables.workspace_swipe_invert === false)
+check("parses scale as a number and disable_inhibit as a bool",
+  parsed.gestures[2].scale === 1.5 && parsed.gestures[2].disable_inhibit === true)
+
+// read.lua grew three trailing fields after the first release. Output from the
+// older one still has to parse, or a stale plugin dir reads as an empty config.
+const oldFormat = Lua.parseHarness(
+  ["g", "3", "up", "fullscreen", "fullscreen", "SUPER", "", "false"].join("\t"))
+check("a record from the pre-scale read.lua still parses",
+  oldFormat.gestures.length === 1
+    && oldFormat.gestures[0].mode === "fullscreen"
+    && oldFormat.gestures[0].scale === 0
+    && oldFormat.gestures[0].zoom_level === ""
+    && oldFormat.gestures[0].disable_inhibit === false)
 
 // ---------------------------------------------------------------------------
 console.log("\nconflict detection")
@@ -189,6 +299,25 @@ check("different finger counts never conflict",
     { fingers: 4, direction: "left", action: "close" },
   ], Schema).length === 0)
 
+check("a pinch shadows both of its halves",
+  Lua.findConflicts([
+    { fingers: 4, direction: "pinch", action: "close" },
+    { fingers: 4, direction: "pinchin", action: "float" },
+  ], Schema).length === 1)
+
+check("the two pinch halves do not conflict with each other",
+  Lua.findConflicts([
+    { fingers: 4, direction: "pinchin", action: "close" },
+    { fingers: 4, direction: "pinchout", action: "float" },
+  ], Schema).length === 0)
+
+check("swipe leaves both pinch halves alone",
+  Lua.findConflicts([
+    { fingers: 4, direction: "swipe", action: "close" },
+    { fingers: 4, direction: "pinchin", action: "float" },
+    { fingers: 4, direction: "pinchout", action: "resize" },
+  ], Schema).length === 0)
+
 check("pinch does not conflict with swipe",
   Lua.findConflicts([
     { fingers: 4, direction: "swipe", action: "close" },
@@ -202,23 +331,40 @@ const errs = Lua.findFieldErrors([
   { fingers: 3, direction: "sideways", action: "workspace", mods: "" },
   { fingers: 1, direction: "up", action: "close", mods: "" },
   { fingers: 3, direction: "up", action: "close", mods: "HYPER" },
-  { fingers: 3, direction: "up", action: "special", workspace_name: "", mods: "" },
+  { fingers: 10, direction: "up", action: "close", mods: "" },
+  { fingers: 3, direction: "pinch", action: "scroll_move", scale: 20, mods: "" },
 ], Schema)
 
 check("rejects an unknown direction", errs.some(e => e.index === 0))
 check("rejects fewer than two fingers", errs.some(e => e.index === 1))
 check("rejects a modifier Hyprland would silently ignore", errs.some(e => e.index === 2))
-check("requires a name for a special-workspace gesture", errs.some(e => e.index === 3))
+check("rejects more fingers than the parser takes", errs.some(e => e.index === 3))
+check("rejects a scale outside the range the parser bounds", errs.some(e => e.index === 4))
+check("accepts a scale inside that range",
+  Lua.findFieldErrors([{ fingers: 3, direction: "pinch", action: "scroll_move",
+                         scale: 1.5, mods: "" }], Schema).length === 0)
+
+// The parser takes `special` with no name -- it falls back to the default
+// special workspace -- so the panel has no business refusing to save it.
+check("a special-workspace gesture with no name is allowed, as Hyprland allows it",
+  Lua.findFieldErrors([{ fingers: 3, direction: "up", action: "special",
+                         workspace_name: "", mods: "" }], Schema).length === 0)
+check("a direction written the short way does not read as an error",
+  Lua.findFieldErrors([{ fingers: 3, direction: "l", action: "close", mods: "" }], Schema).length === 0)
 check("accepts a valid gesture",
   Lua.findFieldErrors([{ fingers: 3, direction: "horizontal", action: "workspace", mods: "SUPER" }], Schema).length === 0)
 check("accepts both 'SUPER SHIFT' and 'SUPER+SHIFT'",
   Schema.badModifier("SUPER SHIFT") === "" && Schema.badModifier("SUPER+SHIFT") === "")
 
 // ---------------------------------------------------------------------------
-// A gesture row is the widest thing in the panel, and it grows when an action
-// brings its own field along. Nothing warns you when it outgrows the card: the
-// row just pushes the controls below it off the right edge, silently. So the
-// arithmetic is checked here against the card width read out of Panel.qml.
+// A gesture row is the widest thing in the panel. Nothing warns you when it
+// outgrows the card: the row just pushes the controls below it off the right
+// edge, silently. So the arithmetic is checked here against the card width read
+// out of Panel.qml.
+//
+// The row is two lines now -- trigger on top, the chosen action's details
+// underneath -- which is what makes room for the modifier control without
+// squeezing anything.
 console.log("\nlayout arithmetic")
 
 // Defaults from the shell's Commons/Style.qml. A user theme can scale these,
@@ -232,22 +378,31 @@ check("the card width is readable from Panel.qml", !!cardMatch)
 
 if (cardMatch) {
   const card = Number(cardMatch[1])
-  // Fingers + direction + action + one contextual field + remove button.
-  // Mode and workspace_name are mutually exclusive, so three wide controls.
-  const widest = STYLE.numberFieldWidth + 3 * STYLE.dropdownWidth + ACTION_BUTTON
-    + 4 * STYLE.controlGap
   const available = card - 2 * STYLE.panelPadding
 
-  check("the widest gesture row fits the card at full control widths",
-    widest <= available,
-    `row needs ${widest}px, card offers ${available}px`)
+  // Line one: fingers + direction + action + modifiers + remove button.
+  const trigger = STYLE.numberFieldWidth + 3 * STYLE.dropdownWidth + ACTION_BUTTON
+    + 4 * STYLE.controlGap
+  check("the trigger line of a gesture row fits the card at full control widths",
+    trigger <= available,
+    `line needs ${trigger}px, card offers ${available}px`)
+
+  // Line two: the action's fields. They are mutually exclusive -- no action
+  // asks for more than one -- so the widest case is a single wide control,
+  // indented under the line above.
+  const details = STYLE.dropdownWidth + STYLE.panelPadding
+  check("the detail line of a gesture row fits the card", details <= available,
+    `line needs ${details}px, card offers ${available}px`)
+  check("no action asks for more fields than the detail line was sized for",
+    Schema.ACTIONS.every(a => a.fields.length <= 1),
+    "widest: " + Math.max(...Schema.ACTIONS.map(a => a.fields.length)))
 
   // And if a theme scales things up, the row must still be able to shrink
   // rather than shove the sections below it off-screen.
   const rowSrc = fs.readFileSync(path.join(root, "GestureRow.qml"), "utf8")
   check("every wide control in a row can shrink",
-    (rowSrc.match(/Layout\.minimumWidth/g) || []).length >= 4,
-    "each Dropdown/TextField needs a Layout.minimumWidth")
+    (rowSrc.match(/Layout\.minimumWidth/g) || []).length >= 7,
+    "each Dropdown/TextField/MultiSelect needs a Layout.minimumWidth")
   check("no control in a row is pinned with a fixed width",
     !/^\s*width:\s*Style\.spacing\.dropdownWidth/m.test(rowSrc))
 }
@@ -272,8 +427,44 @@ check("the delegate does not self-assign index",
 check("the delegate passes the injected index through to rowIndex",
   /^\s*rowIndex:\s*index\s*$/m.test(panelQml))
 check("GestureRow emits the row number it was given",
-  (rowSrc.match(/row\.(edited|removed)\(row\.rowIndex/g) || []).length >= 6,
+  (rowSrc.match(/row\.(edited|removed)\(row\.rowIndex/g) || []).length >= 9,
   "every control must report rowIndex")
+
+// ---------------------------------------------------------------------------
+// A Repeater fed a JS array rebuilds every delegate whenever that array is
+// reassigned -- measured: 3 rows in, 3 destroyed and 3 rebuilt per edit. Since
+// editGesture reassigns on every keystroke, the control being used was torn
+// down inside its own signal handler, with its popup still open. Feeding the
+// Repeater the row COUNT instead destroys nothing while the length holds, and
+// the delegate still tracks the array through `root.gestures[index]`.
+//
+// Source checks again: the failure is in Repeater's model semantics, which no
+// pure-JS test can reach.
+console.log("\ngesture table stability")
+
+check("the gesture Repeater is driven by the row count, not the array",
+  /model:\s*root\.gestures\.length\b/.test(panelQml))
+check("no Repeater is fed the gestures array directly",
+  !/model:\s*root\.gestures\s*$/m.test(panelQml))
+check("the delegate reads its gesture out of the array by index",
+  /gesture:\s*root\.gestures\[index\]/.test(panelQml))
+check("the delegate does not depend on modelData, which a count model has none of",
+  !/modelData/.test(panelQml.slice(panelQml.indexOf("model: root.gestures.length"),
+                                   panelQml.indexOf("Add gesture"))))
+
+// A control that assigns its own property destroys the binding that was on it.
+// Every one of those has to put the binding back, or the row goes deaf to
+// Revert and to edits made in the file.
+const SELF_ASSIGNING = [
+  ["Dropdown", /value = Qt\.binding/g, 3],
+  ["MultiSelect", /values = Qt\.binding/g, 1],
+  ["TextField", /text = Qt\.binding/g, 2],
+]
+for (const [what, pattern, count] of SELF_ASSIGNING) {
+  check(`every ${what} in a row re-arms its binding after the user picks`,
+    (rowSrc.match(pattern) || []).length === count,
+    `expected ${count}, found ${(rowSrc.match(pattern) || []).length}`)
+}
 
 // ---------------------------------------------------------------------------
 console.log("\nread.lua harness (integration)")
@@ -295,17 +486,29 @@ if (!lua) {
     '  finish = function(e) hl.dispatch(hl.dsp.exec_cmd(o.notify("hi"))) end,',
     '} })',
     'o.window("(Alacritty)", { scroll_touchpad = 1.5 })',
+    // The fields read.lua learned to report after the first release, plus a
+    // direction written the short way Hyprland also accepts.
+    'hl.gesture({ fingers = 2, direction = "l", action = "scroll_move", scale = 1.5 })',
+    'hl.gesture({ fingers = 2, direction = "zoomin", action = "cursor_zoom", zoom_level = "+0.5",',
+    '  disable_inhibit = true })',
   ].join("\n")
 
   const out = execFileSync("lua", [path.join(root, "read.lua"), "-e", fixture], { encoding: "utf8" })
   const state = Lua.parseHarness(out)
 
-  check("reads gestures out of a realistic config", state.gestures.length === 3)
+  check("reads gestures out of a realistic config", state.gestures.length === 5)
   check("reads a tunable set via hl.config", state.tunables.workspace_swipe_distance === 500)
   check("marks the callback-table gesture custom",
     state.gestures[2].custom === true && state.gestures[2].action === "custom")
   check("survives helper calls it does not implement",
     state.gestures[0].direction === "horizontal")
+
+  check("reads scale off a scroll_move gesture",
+    state.gestures[3].action === "scroll_move" && state.gestures[3].scale === 1.5)
+  check("reads zoom_level and disable_inhibit off a cursor_zoom gesture",
+    state.gestures[4].zoom_level === "+0.5" && state.gestures[4].disable_inhibit === true)
+  check("reads a direction spelled the short way, verbatim",
+    state.gestures[3].direction === "l" && Schema.canonicalDirection(state.gestures[3].direction) === "left")
 
   // A workspace name is free text from a text field. Render a hostile one, run
   // the result through Lua for real, and confirm it comes back as inert data:
@@ -331,6 +534,25 @@ if (!lua) {
   const reRendered = Lua.renderGesture(readBack.gestures[0])
   check("a hand-written fullscreen mode survives a full round trip",
     reRendered === original, "got " + reRendered)
+
+  // Same round trip for the fields that arrived later. scale must come back a
+  // bare number and zoom_level a quoted string, or the parser rejects the line
+  // it just wrote.
+  const laterFields =
+    'hl.gesture({ fingers = 2, direction = "pinchout", action = "scroll_move", scale = 1.5 })'
+  const laterBack = Lua.parseHarness(
+    execFileSync("lua", [path.join(root, "read.lua"), "-e", laterFields], { encoding: "utf8" }))
+  check("a scale survives a full round trip as a number",
+    Lua.renderGesture(laterBack.gestures[0]) === laterFields,
+    "got " + Lua.renderGesture(laterBack.gestures[0]))
+
+  const inhibit =
+    'hl.gesture({ fingers = 2, direction = "up", action = "close", disable_inhibit = true })'
+  const inhibitBack = Lua.parseHarness(
+    execFileSync("lua", [path.join(root, "read.lua"), "-e", inhibit], { encoding: "utf8" }))
+  check("disable_inhibit survives a save even though no control edits it",
+    Lua.renderGesture(inhibitBack.gestures[0]) === inhibit,
+    "got " + Lua.renderGesture(inhibitBack.gestures[0]))
 
   // A file that is not valid Lua must fail loudly rather than read as empty.
   let threw = false

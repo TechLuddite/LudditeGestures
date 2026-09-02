@@ -38,6 +38,11 @@ function luaValue(value) {
 
 // Optional fields are omitted when empty rather than written as "", so the
 // block stays as short as the equivalent hand-written line.
+//
+// `scale` goes out as a bare Lua number because the parser types it as a float
+// and rejects a string; `zoom_level` goes out quoted because the parser types
+// it as a string and rejects a table. `disable_inhibit` the panel never edits
+// -- it is carried from the read so a hand-written one is not lost on save.
 function renderGesture(g) {
   var parts = [
     "fingers = " + luaNumber(g.fingers),
@@ -47,6 +52,9 @@ function renderGesture(g) {
   if (g.mode) parts.push("mode = " + luaString(g.mode))
   if (g.mods) parts.push("mods = " + luaString(g.mods))
   if (g.workspace_name) parts.push("workspace_name = " + luaString(g.workspace_name))
+  if (g.scale) parts.push("scale = " + luaNumber(g.scale))
+  if (g.zoom_level) parts.push("zoom_level = " + luaString(g.zoom_level))
+  if (g.disable_inhibit) parts.push("disable_inhibit = true")
   return "hl.gesture({ " + parts.join(", ") + " })"
 }
 
@@ -124,7 +132,11 @@ function applyBlock(text, body) {
 // record per line. Turning that into state is a split, not a parser.
 //
 //   g  <fingers>  <direction>  <action>  <mode>  <mods>  <workspace_name>  <custom>
+//      <scale>  <zoom_level>  <disable_inhibit>
 //   c  <key>  <type>  <value>
+//
+// The last three arrived after the first release and are read defensively, so
+// output from an older read.lua still parses into a usable gesture.
 function parseHarness(stdout) {
   var result = { gestures: [], tunables: {} }
   var lines = String(stdout || "").split("\n")
@@ -139,7 +151,10 @@ function parseHarness(stdout) {
         mode: f[4],
         mods: f[5],
         workspace_name: f[6],
-        custom: f[7] === "true"
+        custom: f[7] === "true",
+        scale: f[8] ? Number(f[8]) || 0 : 0,
+        zoom_level: f[9] || "",
+        disable_inhibit: f[10] === "true"
       })
     } else if (f[0] === "c" && f.length >= 4) {
       result.tunables[f[1]] = f[2] === "number" ? Number(f[3])
@@ -152,8 +167,11 @@ function parseHarness(stdout) {
 
 // ----------------------------------------------------------------- conflicts
 
+// A config written by hand may spell a direction "l" or "ZOOMIN"; the coverage
+// table is keyed by the long lowercase form, so canonicalise before looking up
+// or a hand-written gesture silently stops conflicting with anything.
 function coverageOf(direction, schema) {
-  var c = schema.COVERAGE[direction]
+  var c = schema.COVERAGE[schema.canonicalDirection(direction)]
   return c ? c : []
 }
 
@@ -212,11 +230,19 @@ function findFieldErrors(gestures, schema) {
       errors.push({ index: i, text: 'Not an action Hyprland knows: "' + g.action + '"' })
     if (g.fingers < schema.FINGERS_MIN)
       errors.push({ index: i, text: "Hyprland needs at least " + schema.FINGERS_MIN + " fingers" })
+    else if (g.fingers > schema.FINGERS_MAX)
+      errors.push({ index: i, text: "Hyprland takes at most " + schema.FINGERS_MAX + " fingers" })
     var bad = schema.badModifier(g.mods)
     if (bad)
       errors.push({ index: i, text: '"' + bad + '" is not a modifier — the gesture would never fire' })
-    if (g.action === "special" && !g.workspace_name)
-      errors.push({ index: i, text: "Special workspace gestures need a workspace name" })
+    // A `special` gesture with no name is accepted by the parser -- it falls
+    // back to the default special workspace -- so it is not an error here
+    // either. The panel has no business refusing to save what Hyprland takes.
+    if (schema.actionFields(g.action).indexOf("scale") !== -1
+        && g.scale !== undefined && g.scale !== null && g.scale !== ""
+        && !(Number(g.scale) > schema.SCALE_MIN && Number(g.scale) <= schema.SCALE_MAX))
+      errors.push({ index: i, text: "Scale must be over " + schema.SCALE_MIN
+        + " and at most " + schema.SCALE_MAX })
   }
   return errors
 }

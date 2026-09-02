@@ -41,6 +41,17 @@ Item {
   property var unmanagedBefore: []
   property var unmanagedAfter: []
 
+  // Callback gestures found between the fences. They are neither editable nor
+  // safe: saving rewrites the whole block and would drop them, so they get
+  // their own bucket and their own warning rather than being listed with the
+  // hand-written gestures the panel really does leave alone.
+  property var unmanagedInBlock: []
+
+  // The three segments of input.lua are read by three concurrent processes.
+  // Nothing is published until all three have answered -- otherwise whichever
+  // finished last would overwrite the others.
+  property var pendingRead: null
+
   // The last state known to match disk, for Revert and for the dirty flag.
   property var savedGestures: []
   property var savedTunables: ({})
@@ -68,6 +79,7 @@ Item {
     var i
     for (i = 0; i < unmanagedBefore.length; i++) out.push(tag(unmanagedBefore[i], false, i))
     for (i = 0; i < gestures.length; i++) out.push(tag(gestures[i], true, i))
+    for (i = 0; i < unmanagedInBlock.length; i++) out.push(tag(unmanagedInBlock[i], false, i))
     for (i = 0; i < unmanagedAfter.length; i++) out.push(tag(unmanagedAfter[i], false, i))
     return out
   }
@@ -82,6 +94,9 @@ Item {
       fingers: g.fingers, direction: g.direction, action: g.action,
       mode: g.mode || "", mods: g.mods || "",
       workspace_name: g.workspace_name || "", custom: !!g.custom,
+      scale: Number(g.scale) || 0, zoom_level: g.zoom_level || "",
+      // Never edited here, only carried, so a hand-written one survives a save.
+      disable_inhibit: !!g.disable_inhibit,
       managed: managed, sourceIndex: sourceIndex
     }
   }
@@ -101,6 +116,7 @@ Item {
   function readFile(text) {
     var split = Lua.splitBlock(text)
     root.readFailed = false
+    root.pendingRead = { before: null, body: null, after: null }
     beforeReader.command = ["lua", pluginDir + "/read.lua", "-e", split.before]
     beforeReader.running = true
     afterReader.command = ["lua", pluginDir + "/read.lua", "-e", split.after]
@@ -109,30 +125,49 @@ Item {
     bodyReader.running = true
   }
 
-  function adoptManaged(parsed) {
-    var next = []
-    for (var i = 0; i < parsed.gestures.length; i++) {
+  // One segment came back. Publishing early would mean the reader that finished
+  // last silently won, so hold everything until the set is complete.
+  function segmentRead(which, parsed) {
+    if (!root.pendingRead) return
+    root.pendingRead[which] = parsed
+    var p = root.pendingRead
+    if (!p.before || !p.body || !p.after) return
+    root.pendingRead = null
+    adopt(p)
+  }
+
+  function adopt(p) {
+    var managed = []
+    var inBlock = []
+    var i
+    for (i = 0; i < p.body.gestures.length; i++) {
       // A callback gesture inside the fence is not something the panel wrote,
-      // and not something it can edit. Leave it to the hand-written list.
-      if (parsed.gestures[i].custom) { root.unmanagedBefore.push(parsed.gestures[i]); continue }
-      var g = copyGesture(parsed.gestures[i])
+      // and not something it can edit -- or keep, once the block is rewritten.
+      if (p.body.gestures[i].custom) { inBlock.push(p.body.gestures[i]); continue }
+      var g = copyGesture(p.body.gestures[i])
+      // Hyprland takes "l" and "ZOOMIN" where the dropdown says "left" and
+      // "pinchin". Same gesture; the dropdown needs the name it offers.
+      g.direction = Schema.canonicalDirection(g.direction)
       // Hyprland accepts a fullscreen gesture with no mode; the dropdown needs
       // one to show, and writing it back explicitly changes nothing.
       if (Schema.actionFields(g.action).indexOf("mode") !== -1 && !g.mode) g.mode = Schema.defaultMode()
-      next.push(g)
+      managed.push(g)
     }
 
     var t = {}
     for (var k = 0; k < Schema.TUNABLES.length; k++) {
       var spec = Schema.TUNABLES[k]
-      var raw = parsed.tunables[spec.key]
+      var raw = p.body.tunables[spec.key]
       if (raw === undefined) { t[spec.key] = spec.def; continue }
       t[spec.key] = spec.scale ? Math.round(Number(raw) * spec.scale) : raw
     }
 
-    root.gestures = next
+    root.unmanagedBefore = p.before.gestures
+    root.unmanagedInBlock = inBlock
+    root.unmanagedAfter = p.after.gestures
+    root.gestures = managed
     root.tunables = t
-    root.savedGestures = JSON.parse(JSON.stringify(next))
+    root.savedGestures = JSON.parse(JSON.stringify(managed))
     root.savedTunables = JSON.parse(JSON.stringify(t))
   }
 
@@ -141,14 +176,17 @@ Item {
   function editGesture(index, field, value) {
     if (index < 0 || index >= gestures.length) return
     var next = JSON.parse(JSON.stringify(gestures))
-    next[index][field] = field === "fingers" ? Number(value) : value
-    // Dropping to an action that has no mode/name should not leave the old
-    // value behind to be written out again.
+    next[index][field] = (field === "fingers" || field === "scale") ? Number(value) : value
+    // Dropping to an action that does not take a field should not leave the old
+    // value behind to be written out again; picking one that does should not
+    // leave it blank, so what the row shows is what the file will say.
     if (field === "action") {
       var fields = Schema.actionFields(value)
-      if (fields.indexOf("mode") === -1) next[index].mode = ""
-      else if (!next[index].mode) next[index].mode = Schema.defaultMode()
-      if (fields.indexOf("workspace_name") === -1) next[index].workspace_name = ""
+      for (var k = 0; k < Schema.FIELD_NAMES.length; k++) {
+        var name = Schema.FIELD_NAMES[k]
+        if (fields.indexOf(name) === -1) next[index][name] = Schema.fieldEmpty(name)
+        else if (!next[index][name]) next[index][name] = Schema.fieldDefault(name)
+      }
     }
     root.gestures = next
     root.statusText = ""
@@ -157,7 +195,8 @@ Item {
   function addGesture() {
     var next = JSON.parse(JSON.stringify(gestures))
     next.push({ fingers: 3, direction: "up", action: "close",
-                mode: "", mods: "", workspace_name: "", custom: false })
+                mode: "", mods: "", workspace_name: "", scale: 0, zoom_level: "",
+                disable_inhibit: false, custom: false })
     root.gestures = next
     root.statusText = ""
   }
@@ -205,7 +244,7 @@ Item {
 
   Process {
     id: bodyReader
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.adoptManaged(Lua.parseHarness(text)) }
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.segmentRead("body", Lua.parseHarness(text)) }
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: if (String(text || "").trim() !== "") {
@@ -219,7 +258,7 @@ Item {
     id: beforeReader
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.unmanagedBefore = Lua.parseHarness(text).gestures
+      onStreamFinished: root.segmentRead("before", Lua.parseHarness(text))
     }
     stderr: StdioCollector {
       waitForEnd: true
@@ -234,7 +273,14 @@ Item {
     id: afterReader
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.unmanagedAfter = Lua.parseHarness(text).gestures
+      onStreamFinished: root.segmentRead("after", Lua.parseHarness(text))
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (String(text || "").trim() !== "") {
+        root.readFailed = true
+        root.errorText = "input.lua did not parse: " + String(text).trim()
+      }
     }
   }
 
@@ -400,13 +446,18 @@ Item {
               font.pixelSize: Style.font.body
             }
 
+            // The model is the row COUNT, not the array. A Repeater fed a JS
+            // array rebuilds every delegate whenever that array is reassigned,
+            // and editGesture reassigns it on every keystroke -- so the control
+            // being used was destroyed mid-signal, taking its open popup with
+            // it. Counting instead leaves the delegates alone; `gesture` still
+            // tracks the array, so each row redraws without being rebuilt.
             Repeater {
-              model: root.gestures
+              model: root.gestures.length
               GestureRow {
                 required property int index
-                required property var modelData
                 Layout.fillWidth: true
-                gesture: modelData
+                gesture: root.gestures[index] || ({})
                 rowIndex: index
                 foreground: root.foreground
                 accent: root.accent
@@ -461,6 +512,21 @@ Item {
                       + "; the earlier one wins where they meet."
                 }
               }
+            }
+
+            Text {
+              visible: root.unmanagedInBlock.length > 0
+              Layout.fillWidth: true
+              color: root.urgent
+              wrapMode: Text.WordWrap
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              text: "✗  " + root.unmanagedInBlock.length
+                + (root.unmanagedInBlock.length === 1 ? " gesture inside" : " gestures inside")
+                + " the managed block runs a Lua callback, which no dropdown can hold."
+                + " Saving rewrites the block and would drop "
+                + (root.unmanagedInBlock.length === 1 ? "it" : "them")
+                + " — move it outside the fences to keep it."
             }
 
             // ---- hand-written

@@ -8,7 +8,12 @@
 -- Output is one tab-separated record per line:
 --
 --   g  <fingers>  <direction>  <action>  <mode>  <mods>  <workspace>  <custom>
+--      <scale>  <zoom_level>  <disable_inhibit>
 --   c  <key>  <type>  <value>
+--
+-- The three trailing gesture fields were added after the first release, so they
+-- are appended rather than woven in: an older reader still finds what it knows
+-- at the index it expects.
 --
 -- Nothing is applied: every stub only records. A hand-written gesture whose
 -- action is a Lua function or a table of callbacks is reported with action
@@ -63,7 +68,13 @@ local recorded = {
       spec.mode or "",
       spec.mods or "",
       spec.workspace_name or "",
-      custom)
+      custom,
+      -- Reported so the panel can put them back. `scale` and `zoom_level` it
+      -- also edits; `disable_inhibit` it does not, and carrying it through
+      -- untouched is the only way a hand-written one survives a save.
+      spec.scale or "",
+      spec.zoom_level or "",
+      spec.disable_inhibit == true and "true" or "")
   end,
 
   -- Only the gestures:* subtree is the panel's business.

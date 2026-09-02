@@ -5,7 +5,9 @@
 //
 //   hl.gesture: invalid direction "..."   direction is a closed set
 //   hl.gesture: unknown action "..."      action is a closed set
-//   field "fingers": ... minimum of 2     fingers starts at 2
+//   field "fingers": ... minimum of 2     fingers runs 2..9
+//   field "scale": ... maximum of 10.00   scale is a float, 0.1 < s <= 10
+//   field "zoom_level": string type       zoom_level is a string, not a number
 //
 // `mods` is NOT validated by the parser -- it accepts any string and silently
 // never fires -- so the modifier list below is checked here instead.
@@ -18,13 +20,35 @@ var DIRECTIONS = [
   { value: "horizontal", label: "Swipe horizontally" },
   { value: "vertical",   label: "Swipe vertically" },
   { value: "swipe",      label: "Swipe any direction" },
-  { value: "pinch",      label: "Pinch" }
+  { value: "pinch",      label: "Pinch either way" },
+  { value: "pinchin",    label: "Pinch in" },
+  { value: "pinchout",   label: "Pinch out" }
 ]
+
+// Hyprland's parser is case-insensitive and takes short forms, so a config
+// written by hand can say `direction = "l"` where the panel says "left". Both
+// name the same PINCH_IN/LEFT/... internally -- confirmed by registering each
+// alias behind a known gesture and reading the canonical name back out of the
+// "Previous X shadows new Y" message. Reading canonicalises; the panel only
+// ever writes the long form, and only inside its own block.
+var DIRECTION_ALIASES = {
+  l: "left", r: "right", u: "up", d: "down",
+  horiz: "horizontal", vert: "vertical",
+  zoomin: "pinchin", zoomout: "pinchout"
+}
+
+function canonicalDirection(value) {
+  var v = String(value === undefined || value === null ? "" : value).trim().toLowerCase()
+  return DIRECTION_ALIASES.hasOwnProperty(v) ? DIRECTION_ALIASES[v] : v
+}
 
 // Which directions each one answers to. Hyprland refuses to register a gesture
 // whose reach is already fully covered by an earlier one, and the coverage sets
 // below reproduce that rule exactly -- see test/run.js, which asserts them
-// against the lattice measured from the compositor.
+// against the 10x10 lattice measured from the compositor.
+//
+// Note that `swipe` covers every swipe but no pinch, and that `pinch` covers
+// both pinch halves while neither half covers the other.
 var COVERAGE = {
   left:       ["left"],
   right:      ["right"],
@@ -32,7 +56,9 @@ var COVERAGE = {
   down:       ["down"],
   horizontal: ["left", "right", "horizontal"],
   vertical:   ["up", "down", "vertical"],
-  pinch:      ["pinch"],
+  pinch:      ["pinch", "pinchin", "pinchout"],
+  pinchin:    ["pinchin"],
+  pinchout:   ["pinchout"],
   swipe:      ["left", "right", "up", "down", "horizontal", "vertical", "swipe"]
 }
 
@@ -40,13 +66,15 @@ var COVERAGE = {
 // hand-written gestures do anything else -- those are read and shown, never
 // rewritten. `fields` is what the row offers beyond fingers/direction.
 var ACTIONS = [
-  { value: "workspace",  label: "Switch workspace",   fields: [] },
-  { value: "move",       label: "Move window",        fields: [] },
-  { value: "close",      label: "Close window",       fields: [] },
-  { value: "fullscreen", label: "Fullscreen",         fields: ["mode"] },
-  { value: "float",      label: "Toggle floating",    fields: [] },
-  { value: "special",    label: "Special workspace",  fields: ["workspace_name"] },
-  { value: "resize",     label: "Resize window",      fields: [] }
+  { value: "workspace",   label: "Switch workspace",   fields: [] },
+  { value: "move",        label: "Move window",        fields: [] },
+  { value: "close",       label: "Close window",       fields: [] },
+  { value: "fullscreen",  label: "Fullscreen",         fields: ["mode"] },
+  { value: "float",       label: "Toggle floating",    fields: [] },
+  { value: "special",     label: "Special workspace",  fields: ["workspace_name"] },
+  { value: "resize",      label: "Resize window",      fields: [] },
+  { value: "scroll_move", label: "Scroll",             fields: ["scale"] },
+  { value: "cursor_zoom", label: "Zoom the screen",    fields: ["zoom_level"] }
 ]
 
 // Only meaningful for action = "fullscreen". Both values are written out
@@ -58,13 +86,64 @@ var MODES = [
   { value: "maximize",   label: "Maximize" }
 ]
 
+// The contextual controls a row grows when an action asks for one. `kind` is
+// what the row draws; everything else is what that control needs.
+//
+// `scale` is a Lua float the parser bounds at 0.1 < s <= 10 (it rejects 0.1
+// itself, on the float compare). A NumberField is integer-only, so it is edited
+// as whole percent and divided back down on the way out -- the same trick the
+// workspace_swipe_cancel_ratio tunable already uses.
+//
+// `zoom_level` really is a string to the parser, not a number, which is what
+// lets it take a relative "+0.5" as well as an absolute "2".
+var FIELDS = {
+  mode: {
+    kind: "choice", label: "Mode", options: MODES, def: "fullscreen"
+  },
+  workspace_name: {
+    kind: "text", label: "Workspace", placeholder: "Workspace name", def: ""
+  },
+  scale: {
+    kind: "percent", label: "Scale", unit: "%", scale: 100,
+    min: 20, max: 1000, step: 10, def: 1
+  },
+  zoom_level: {
+    kind: "text", label: "Zoom level", placeholder: "2, or +0.5", def: ""
+  }
+}
+
 // What a mode-taking action gets when it has none yet.
 function defaultMode() { return "fullscreen" }
 
+// The value a contextual field starts at when its action is first chosen.
+// Written out explicitly, for the same reason MODES has no empty option.
+function fieldDefault(name) {
+  var spec = FIELDS[name]
+  return spec ? spec.def : ""
+}
+
+function fieldSpec(name) { return FIELDS[name] || null }
+
+// Every contextual field there is, and the value that means "not set" for each
+// -- which is what renderGesture omits. Switching to an action that does not
+// take a field resets it to this rather than leaving the old value behind to
+// be written out again.
+var FIELD_NAMES = ["mode", "workspace_name", "scale", "zoom_level"]
+
+function fieldEmpty(name) {
+  var spec = FIELDS[name]
+  return (spec && spec.kind === "percent") ? 0 : ""
+}
+
 var MODIFIERS = ["SUPER", "SHIFT", "ALT", "CTRL"]
 
+// Hyprland bounds fingers at 2..9. It is a touchpad, so the top of that range
+// is theoretical, but the panel has no business being stricter than the parser.
 var FINGERS_MIN = 2
-var FINGERS_MAX = 5
+var FINGERS_MAX = 9
+
+var SCALE_MIN = 0.1
+var SCALE_MAX = 10
 
 // The gestures:* half of the config. These are still live in 0.56.2 (each was
 // read back with `hyprctl getoption`), and they tune how a swipe feels rather
@@ -95,9 +174,10 @@ var TUNABLES = [
 ]
 
 function directionLabel(value) {
+  var v = canonicalDirection(value)
   for (var i = 0; i < DIRECTIONS.length; i++)
-    if (DIRECTIONS[i].value === value) return DIRECTIONS[i].label
-  return value
+    if (DIRECTIONS[i].value === v) return DIRECTIONS[i].label
+  return String(value)
 }
 
 function actionLabel(value) {
@@ -118,7 +198,7 @@ function tunableFor(key) {
   return null
 }
 
-function isValidDirection(v) { return COVERAGE.hasOwnProperty(v) }
+function isValidDirection(v) { return COVERAGE.hasOwnProperty(canonicalDirection(v)) }
 
 function isValidAction(v) {
   for (var i = 0; i < ACTIONS.length; i++) if (ACTIONS[i].value === v) return true
@@ -136,4 +216,26 @@ function badModifier(mods) {
     if (MODIFIERS.indexOf(parts[i].toUpperCase()) === -1) return parts[i]
   }
   return ""
+}
+
+// The modifier control edits a list; the file stores one "SUPER+SHIFT" string.
+function modsToList(mods) {
+  var raw = String(mods || "").trim()
+  if (raw === "") return []
+  var parts = raw.split(/[\s+]+/)
+  var out = []
+  for (var i = 0; i < parts.length; i++) {
+    if (parts[i] === "") continue
+    out.push(parts[i].toUpperCase())
+  }
+  return out
+}
+
+// Kept in MODIFIERS order rather than click order, so the same set of keys
+// always renders as the same string and never shows up as a spurious edit.
+function modsFromList(values) {
+  var picked = []
+  for (var i = 0; i < MODIFIERS.length; i++)
+    if ((values || []).indexOf(MODIFIERS[i]) !== -1) picked.push(MODIFIERS[i])
+  return picked.join("+")
 }

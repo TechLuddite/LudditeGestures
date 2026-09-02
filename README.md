@@ -25,14 +25,21 @@ gestures stay — they are plain Lua in the file Hyprland already reads.
 
 | Section | What is there |
 |---|---|
-| **Gestures** | Finger count, direction, and action, plus the fields each action actually uses — a mode for fullscreen, a workspace name for special |
+| **Gestures** | Finger count, direction, action and held modifiers, plus the fields each action actually uses — a mode for fullscreen, a workspace name for special, a scale for scroll, a zoom level for zoom |
 | **Written by hand** | Gestures found elsewhere in `input.lua`, read-only, shown so conflicts make sense |
 | **Feel** | Swipe distance, commit threshold, flick speed, direction lock, create-new-workspace, swipe-forever, invert, close timeout |
 
-Directions are `left`, `right`, `up`, `down`, `horizontal`, `vertical`, `swipe`
-and `pinch`. Actions are `workspace`, `move`, `close`, `fullscreen`, `float`,
-`special` and `resize`. Both lists were read out of Hyprland 0.56.2 by feeding
-it candidates until it complained, rather than copied from documentation.
+Directions are `left`, `right`, `up`, `down`, `horizontal`, `vertical`, `swipe`,
+`pinch`, `pinchin` and `pinchout`. Actions are `workspace`, `move`, `close`,
+`fullscreen`, `float`, `special`, `resize`, `scroll_move` and `cursor_zoom`.
+Both lists were read out of Hyprland 0.56.2 by feeding it candidates until it
+complained, rather than copied from documentation.
+
+Hyprland is looser about spelling than the dropdown is: it takes `l`, `horiz`,
+`VERT` and `zoomin` as well as the long names, and its own parser reports every
+one of them under the same canonical direction. A config that uses the short
+forms reads correctly and conflicts correctly; the panel just writes the long
+name back, and only inside its own block.
 
 ## Conflicts
 
@@ -45,8 +52,9 @@ you are still editing:
 
 It also flags the quieter case Hyprland accepts without comment: a partial
 overlap, where the earlier gesture wins only for the directions the two share.
-`swipe` covers everything except `pinch`; `horizontal` covers `left` and
-`right`; `vertical` covers `up` and `down`.
+`swipe` covers every swipe and no pinch at all; `horizontal` covers `left` and
+`right`; `vertical` covers `up` and `down`; `pinch` covers both `pinchin` and
+`pinchout`, while neither half covers the other.
 
 ## What it will not touch
 
@@ -56,6 +64,22 @@ dropdowns. Flattening one into an approximation would be the worst thing a GUI
 like this could do, so it does not try. Those gestures are read, listed under
 **Written by hand**, and counted when looking for conflicts. Nothing outside the
 fenced block is ever rewritten.
+
+One case is worth calling out, because the panel used to get it wrong: a
+callback gesture written *inside* the fences is not safe there. Saving rewrites
+the whole block, and no dropdown can hold a Lua function, so it would go. The
+panel now says so rather than listing it among the gestures it leaves alone —
+move it above the opening fence and it is yours again.
+
+### Double swipes
+
+There is no direction for one, and no field to add. Hyprland's gesture engine
+matches a single swipe: the closed set of directions is the ten above, and
+"twice, quickly" is not among them. A double swipe means holding the timing
+yourself, in a callback with `start`/`update`/`finish` — real, useful, and
+exactly the shape this panel refuses to pretend it can edit. Write it above the
+fence and the panel will read it, list it, and count it against your other
+gestures without touching it.
 
 ## How it works
 
@@ -97,10 +121,17 @@ does not re-instantiate a panel the shell has already created. A layout change
 looks like it did nothing until `omarchy restart shell`, which is a good way to
 waste an afternoon chasing a bug you already fixed.
 
-The test suite pins the shadow-coverage table against the lattice measured from
-Hyprland 0.56.2, so if a future release changes the rule, the tests say which
-cell moved. It also renders a hostile workspace name, runs the result through
-Lua for real, and asserts it comes back as one inert string.
+The test suite pins the shadow-coverage table against the 10×10 lattice measured
+from Hyprland 0.56.2, so if a future release changes the rule, the tests say
+which cell moved. Measuring it takes a `hyprctl reload` between every single
+cell: a probe that registers successfully stays live and shadows the next one,
+which quietly turns a whole row into nonsense.
+
+It also renders a hostile workspace name, runs the result through Lua for real,
+and asserts it comes back as one inert string; and it checks in the QML source
+what QML itself will not — that the gesture Repeater is driven by the row count
+rather than the array, because feeding it the array rebuilds every row on every
+keystroke, destroying the control being used inside its own signal handler.
 
 ## License
 
