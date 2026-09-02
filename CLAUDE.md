@@ -165,6 +165,18 @@ Related: a delegate must not declare a property named `index`. A Repeater inject
 one, the two collide silently, and every row reports 0 — so every edit lands on
 the first gesture. Hence `rowIndex`.
 
+## The marker that must not be renamed
+
+`Service.qml` and `luddite-gestures.desktop` carry `X-LudditeGestures-Managed`.
+It is a desktop-entry key, not a reference to the repository, and it survived the
+rename to `luddite-gestures` deliberately.
+
+Uninstall deletes a launcher entry **only if it carries that exact string**.
+Change it and every entry already on disk is orphaned: the old one stops
+matching, is never cleaned up, and keeps launching a plugin that is no longer
+installed. It looks exactly like a stale name, which is why it is commented at
+the site.
+
 ## Testing
 
 ```bash

@@ -7,6 +7,12 @@ import Quickshell
 //
 // Only a file carrying the X-LudditeGestures-Managed marker is ever written or
 // deleted: an entry of the same name that someone else put there is left alone.
+//
+// That marker is a desktop-entry key, not a reference to the repository, and it
+// must not be renamed to match it. Uninstall deletes an entry only if it carries
+// this exact string, so changing it orphans every entry already on disk: the old
+// one stops matching, is never cleaned up, and keeps launching a plugin that is
+// no longer installed. It stayed as it was when the repo became luddite-gestures.
 QtObject {
   id: root
 

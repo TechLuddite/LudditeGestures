@@ -6,8 +6,8 @@
   "author": "TechLuddite",
   "license": "MIT",
   "description": "A panel for editing Hyprland touchpad gestures. Writes a managed block into ~/.config/hypr/input.lua, shows the gestures you wrote by hand alongside it, and flags shadowed swipes before you save.",
-  "homepage": "https://github.com/TechLuddite/LudditeGestures",
-  "repository": "https://github.com/TechLuddite/LudditeGestures",
+  "homepage": "https://github.com/TechLuddite/luddite-gestures",
+  "repository": "https://github.com/TechLuddite/luddite-gestures",
   "kinds": ["panel", "service"],
   "entryPoints": {
     "panel": "Panel.qml",
