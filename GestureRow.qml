@@ -10,13 +10,13 @@ RowLayout {
   id: row
 
   property var gesture: ({})
-  property int index: 0
+  property int rowIndex: 0
   property color foreground: "white"
   property color accent: "white"
   property string fontFamily: ""
 
-  signal edited(int index, string field, var value)
-  signal removed(int index)
+  signal edited(int row, string field, var value)
+  signal removed(int row)
 
   readonly property var fields: Schema.actionFields(gesture.action || "")
 
@@ -32,7 +32,7 @@ RowLayout {
     foreground: row.foreground
     accent: row.accent
     fontFamily: row.fontFamily
-    onModified: row.edited(row.index, "fingers", fingers.value)
+    onModified: row.edited(row.rowIndex, "fingers", fingers.value)
   }
 
   Dropdown {
@@ -47,7 +47,7 @@ RowLayout {
     foreground: row.foreground
     accent: row.accent
     fontFamily: row.fontFamily
-    onChanged: function (v) { row.edited(row.index, "direction", v) }
+    onChanged: function (v) { row.edited(row.rowIndex, "direction", v) }
   }
 
   Dropdown {
@@ -62,7 +62,7 @@ RowLayout {
     foreground: row.foreground
     accent: row.accent
     fontFamily: row.fontFamily
-    onChanged: function (v) { row.edited(row.index, "action", v) }
+    onChanged: function (v) { row.edited(row.rowIndex, "action", v) }
   }
 
   Dropdown {
@@ -78,7 +78,7 @@ RowLayout {
     foreground: row.foreground
     accent: row.accent
     fontFamily: row.fontFamily
-    onChanged: function (v) { row.edited(row.index, "mode", v) }
+    onChanged: function (v) { row.edited(row.rowIndex, "mode", v) }
   }
 
   TextField {
@@ -94,7 +94,7 @@ RowLayout {
     accent: row.accent
     font.family: row.fontFamily
     font.pixelSize: Style.font.body
-    onEditingFinished: row.edited(row.index, "workspace_name", workspaceName.text)
+    onEditingFinished: row.edited(row.rowIndex, "workspace_name", workspaceName.text)
   }
 
   Item { Layout.fillWidth: true }
@@ -104,6 +104,6 @@ RowLayout {
     tooltipText: "Remove this gesture"
     foreground: row.foreground
     fontFamily: row.fontFamily
-    onClicked: row.removed(row.index)
+    onClicked: row.removed(row.rowIndex)
   }
 }

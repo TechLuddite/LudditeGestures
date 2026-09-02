@@ -407,7 +407,7 @@ Item {
                 required property var modelData
                 Layout.fillWidth: true
                 gesture: modelData
-                index: index
+                rowIndex: index
                 foreground: root.foreground
                 accent: root.accent
                 fontFamily: root.fontFamily

@@ -253,6 +253,29 @@ if (cardMatch) {
 }
 
 // ---------------------------------------------------------------------------
+// `index` is the name a Repeater injects into its delegate. A component used as
+// a delegate must not also declare a property called `index`: the two collide,
+// QML says nothing, and every row silently reports 0 -- so editing any row
+// writes to the first one. This is a source check because the failure lives in
+// QML's name resolution, where no pure-JS test can reach it.
+console.log("\ndelegate index wiring")
+
+const rowSrc = fs.readFileSync(path.join(root, "GestureRow.qml"), "utf8")
+const panelQml = fs.readFileSync(path.join(root, "Panel.qml"), "utf8")
+
+check("GestureRow does not declare a property named `index`",
+  !/^\s*property\s+\w+\s+index\b/m.test(rowSrc))
+check("GestureRow does not read `index` off itself",
+  !/\brow\.index\b/.test(rowSrc))
+check("the delegate does not self-assign index",
+  !/^\s*index:\s*index\s*$/m.test(panelQml))
+check("the delegate passes the injected index through to rowIndex",
+  /^\s*rowIndex:\s*index\s*$/m.test(panelQml))
+check("GestureRow emits the row number it was given",
+  (rowSrc.match(/row\.(edited|removed)\(row\.rowIndex/g) || []).length >= 6,
+  "every control must report rowIndex")
+
+// ---------------------------------------------------------------------------
 console.log("\nread.lua harness (integration)")
 
 let lua = true
