@@ -37,7 +37,10 @@ RowLayout {
 
   Dropdown {
     id: direction
-    width: Style.spacing.dropdownWidth
+    Layout.fillWidth: true
+    Layout.preferredWidth: Style.spacing.dropdownWidth
+    Layout.maximumWidth: Style.spacing.dropdownWidth
+    Layout.minimumWidth: Style.space(130)
     label: "Gesture"
     options: Schema.DIRECTIONS
     value: row.gesture.direction || ""
@@ -49,7 +52,10 @@ RowLayout {
 
   Dropdown {
     id: action
-    width: Style.spacing.dropdownWidth
+    Layout.fillWidth: true
+    Layout.preferredWidth: Style.spacing.dropdownWidth
+    Layout.maximumWidth: Style.spacing.dropdownWidth
+    Layout.minimumWidth: Style.space(130)
     label: "Does"
     options: Schema.ACTIONS
     value: row.gesture.action || ""
@@ -62,7 +68,10 @@ RowLayout {
   Dropdown {
     id: mode
     visible: row.fields.indexOf("mode") !== -1
-    width: Style.spacing.dropdownWidth
+    Layout.fillWidth: visible
+    Layout.preferredWidth: visible ? Style.spacing.dropdownWidth : 0
+    Layout.maximumWidth: Style.spacing.dropdownWidth
+    Layout.minimumWidth: visible ? Style.space(120) : 0
     label: "Mode"
     options: Schema.MODES
     value: row.gesture.mode || ""
@@ -75,7 +84,10 @@ RowLayout {
   TextField {
     id: workspaceName
     visible: row.fields.indexOf("workspace_name") !== -1
-    width: Style.spacing.dropdownWidth
+    Layout.fillWidth: visible
+    Layout.preferredWidth: visible ? Style.spacing.dropdownWidth : 0
+    Layout.maximumWidth: Style.spacing.dropdownWidth
+    Layout.minimumWidth: visible ? Style.space(120) : 0
     placeholderText: "Workspace name"
     text: row.gesture.workspace_name || ""
     foreground: row.foreground

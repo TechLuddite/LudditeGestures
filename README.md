@@ -92,6 +92,11 @@ node test/run.js          # pure-JS tests for the renderer, parser and conflicts
 omarchy plugin validate . # the same checks the shell enforces at install
 ```
 
+Saving a file under `~/.config/omarchy/plugins/` hot-reloads plugin code, but it
+does not re-instantiate a panel the shell has already created. A layout change
+looks like it did nothing until `omarchy restart shell`, which is a good way to
+waste an afternoon chasing a bug you already fixed.
+
 The test suite pins the shadow-coverage table against the lattice measured from
 Hyprland 0.56.2, so if a future release changes the rule, the tests say which
 cell moved. It also renders a hostile workspace name, runs the result through

@@ -215,6 +215,44 @@ check("accepts both 'SUPER SHIFT' and 'SUPER+SHIFT'",
   Schema.badModifier("SUPER SHIFT") === "" && Schema.badModifier("SUPER+SHIFT") === "")
 
 // ---------------------------------------------------------------------------
+// A gesture row is the widest thing in the panel, and it grows when an action
+// brings its own field along. Nothing warns you when it outgrows the card: the
+// row just pushes the controls below it off the right edge, silently. So the
+// arithmetic is checked here against the card width read out of Panel.qml.
+console.log("\nlayout arithmetic")
+
+// Defaults from the shell's Commons/Style.qml. A user theme can scale these,
+// but the ratio is what matters and it does not change.
+const STYLE = { dropdownWidth: 240, numberFieldWidth: 120, controlGap: 8, panelPadding: 18 }
+const ACTION_BUTTON = 32
+
+const panelSrc = fs.readFileSync(path.join(root, "Panel.qml"), "utf8")
+const cardMatch = panelSrc.match(/width:\s*Math\.min\(Style\.space\((\d+)\)/)
+check("the card width is readable from Panel.qml", !!cardMatch)
+
+if (cardMatch) {
+  const card = Number(cardMatch[1])
+  // Fingers + direction + action + one contextual field + remove button.
+  // Mode and workspace_name are mutually exclusive, so three wide controls.
+  const widest = STYLE.numberFieldWidth + 3 * STYLE.dropdownWidth + ACTION_BUTTON
+    + 4 * STYLE.controlGap
+  const available = card - 2 * STYLE.panelPadding
+
+  check("the widest gesture row fits the card at full control widths",
+    widest <= available,
+    `row needs ${widest}px, card offers ${available}px`)
+
+  // And if a theme scales things up, the row must still be able to shrink
+  // rather than shove the sections below it off-screen.
+  const rowSrc = fs.readFileSync(path.join(root, "GestureRow.qml"), "utf8")
+  check("every wide control in a row can shrink",
+    (rowSrc.match(/Layout\.minimumWidth/g) || []).length >= 4,
+    "each Dropdown/TextField needs a Layout.minimumWidth")
+  check("no control in a row is pinned with a fixed width",
+    !/^\s*width:\s*Style\.spacing\.dropdownWidth/m.test(rowSrc))
+}
+
+// ---------------------------------------------------------------------------
 console.log("\nread.lua harness (integration)")
 
 let lua = true

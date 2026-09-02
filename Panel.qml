@@ -304,7 +304,7 @@ Item {
     BorderSurface {
       id: card
       anchors.centerIn: parent
-      width: Math.min(Style.space(860), window.width - Style.gapsOut * 4)
+      width: Math.min(Style.space(980), window.width - Style.gapsOut * 4)
       height: Math.min(Style.space(680), window.height - Style.gapsOut * 4)
       radius: Style.cornerRadius
       color: root.background
@@ -527,6 +527,7 @@ Item {
                     opacity: 0.55
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                   }
@@ -534,6 +535,8 @@ Item {
 
                 ToggleSwitch {
                   visible: modelData.type === "bool"
+                  Layout.minimumWidth: implicitWidth
+                  Layout.preferredWidth: implicitWidth
                   checked: root.tunables[modelData.key] === true
                   foreground: root.foreground
                   accent: root.accent
@@ -543,6 +546,8 @@ Item {
                 NumberField {
                   id: numberField
                   visible: modelData.type !== "bool"
+                  Layout.preferredWidth: Style.spacing.numberFieldWidth
+                  Layout.minimumWidth: Style.spacing.numberFieldWidth
                   value: Number(root.tunables[modelData.key] || modelData.def)
                   from: modelData.min || 0
                   to: modelData.max || 1000
