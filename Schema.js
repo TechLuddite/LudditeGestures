@@ -77,6 +77,58 @@ var ACTIONS = [
   { value: "cursor_zoom", label: "Zoom the screen",    fields: ["zoom_level"] }
 ]
 
+// Everything you can put on a keybind. Walked out of the running compositor --
+// `for k, v in pairs(hl.dsp)`, two levels deep, every value of type function --
+// rather than copied from documentation, so this is exactly what 0.56.2 has.
+//
+// A gesture whose action is one of these is not a built-in gesture action: it is
+// a Lua callback that dispatches, the same call a keybind would make. The panel
+// writes that callback, so the whole keybind vocabulary is reachable from the
+// dropdown instead of only the nine actions Hyprland's gesture parser knows.
+var DISPATCHERS = [
+  "cursor.move", "cursor.move_to_corner",
+  "dpms", "event", "exec_cmd", "exec_raw", "exit", "focus",
+  "force_idle", "force_renderer_reload", "global",
+  "group.active", "group.lock", "group.lock_active", "group.move_window",
+  "group.next", "group.prev", "group.toggle",
+  "layout", "no_op", "pass", "release_input_capture",
+  "send_key_state", "send_shortcut", "submap",
+  "window.alter_zorder", "window.bring_to_top", "window.center",
+  "window.clear_tags", "window.close", "window.cycle_next",
+  "window.deny_from_group", "window.drag", "window.float", "window.fullscreen",
+  "window.fullscreen_state", "window.kill", "window.move", "window.pin",
+  "window.pseudo", "window.resize", "window.set_prop", "window.signal",
+  "window.swap", "window.tag", "window.toggle_swallow",
+  "workspace.change_id", "workspace.move", "workspace.rename",
+  "workspace.swap_monitors", "workspace.toggle_special"
+]
+
+// A dispatcher action is spelled "dispatch:<path>" so one dropdown can hold both
+// kinds without the two ever colliding -- no built-in action has a colon in it.
+var DISPATCH_PREFIX = "dispatch:"
+
+function dispatchAction(path) { return DISPATCH_PREFIX + path }
+
+function isDispatchAction(value) {
+  return String(value || "").indexOf(DISPATCH_PREFIX) === 0
+}
+
+function dispatcherOf(value) {
+  return isDispatchAction(value) ? String(value).substring(DISPATCH_PREFIX.length) : ""
+}
+
+// What the "Does" dropdown offers: the built-in gesture actions first, because
+// they are what Hyprland runs natively and what most gestures want, then every
+// dispatcher. Long enough that the control has to be searchable.
+var ACTION_OPTIONS = (function () {
+  var out = []
+  for (var i = 0; i < ACTIONS.length; i++)
+    out.push({ value: ACTIONS[i].value, label: ACTIONS[i].label })
+  for (var k = 0; k < DISPATCHERS.length; k++)
+    out.push({ value: dispatchAction(DISPATCHERS[k]), label: DISPATCHERS[k] })
+  return out
+})()
+
 // ------------------------------------------------------- the double-swipe guard
 //
 // Hyprland matches one swipe at a time -- there is no double-swipe direction,
@@ -102,8 +154,11 @@ var GUARDABLE_ACTIONS = ["close", "float"]
 var DOUBLE_DIRECTIONS = ["left", "right", "up", "down", "horizontal", "vertical", "swipe"]
 
 function canDouble(action, direction) {
-  return GUARDABLE_ACTIONS.indexOf(action) !== -1
-    && DOUBLE_DIRECTIONS.indexOf(canonicalDirection(direction)) !== -1
+  if (DOUBLE_DIRECTIONS.indexOf(canonicalDirection(direction)) === -1) return false
+  // A dispatcher gesture is already a callback the panel writes, and the call it
+  // makes is the user's own -- there is no argument for this side to get wrong,
+  // so the guard is offered for all of them.
+  return isDispatchAction(action) || GUARDABLE_ACTIONS.indexOf(action) !== -1
 }
 
 // The knobs the guard exposes, and what they start at. Defaults are the ones
@@ -154,6 +209,13 @@ var FIELDS = {
   double_hint: {
     kind: "text", label: "Hint after the first swipe",
     placeholder: "Leave empty for no hint", def: "Swipe again to confirm"
+  },
+  // Raw Lua, dropped between the dispatcher's parentheses exactly as a keybind
+  // would write it -- which is the point, and also why it is checked before any
+  // of it reaches the file. See LuaGestures.badLuaArgs and read.lua --check.
+  dispatch_args: {
+    kind: "text", label: "Arguments (Lua)",
+    placeholder: "empty, or { direction = \"l\" }", def: ""
   }
 }
 
@@ -173,7 +235,7 @@ function fieldSpec(name) { return FIELDS[name] || null }
 // -- which is what renderGesture omits. Switching to an action that does not
 // take a field resets it to this rather than leaving the old value behind to
 // be written out again.
-var FIELD_NAMES = ["mode", "workspace_name", "scale", "zoom_level"]
+var FIELD_NAMES = ["mode", "workspace_name", "scale", "zoom_level", "dispatch_args"]
 
 function fieldEmpty(name) {
   var spec = FIELDS[name]
@@ -227,12 +289,14 @@ function directionLabel(value) {
 }
 
 function actionLabel(value) {
+  if (isDispatchAction(value)) return dispatcherOf(value)
   for (var i = 0; i < ACTIONS.length; i++)
     if (ACTIONS[i].value === value) return ACTIONS[i].label
   return value
 }
 
 function actionFields(value) {
+  if (isDispatchAction(value)) return ["dispatch_args"]
   for (var i = 0; i < ACTIONS.length; i++)
     if (ACTIONS[i].value === value) return ACTIONS[i].fields
   return []
@@ -247,6 +311,7 @@ function tunableFor(key) {
 function isValidDirection(v) { return COVERAGE.hasOwnProperty(canonicalDirection(v)) }
 
 function isValidAction(v) {
+  if (isDispatchAction(v)) return DISPATCHERS.indexOf(dispatcherOf(v)) !== -1
   for (var i = 0; i < ACTIONS.length; i++) if (ACTIONS[i].value === v) return true
   return false
 }

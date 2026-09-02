@@ -4,12 +4,20 @@
 --
 --   lua read.lua <path>        run a file
 --   lua read.lua -e <source>   run a string (one segment of input.lua)
+--   lua read.lua --check -e <source>
+--                              only check that it compiles, and run nothing
+--
+-- --check is what the panel calls before it writes. A dispatcher gesture carries
+-- argument text the user typed, and that text lands in the file as Lua: one typo
+-- would be a syntax error in the whole of input.lua, taking the rest of the
+-- config down with it and leaving the panel unable to show the gesture to fix.
+-- Better to refuse the save.
 --
 -- Output is one tab-separated record per line:
 --
 --   g  <fingers>  <direction>  <action>  <mode>  <mods>  <workspace>  <custom>
 --      <scale>  <zoom_level>  <disable_inhibit>
---      <double>  <within_ms>  <min_distance>  <hint>
+--      <double>  <within_ms>  <min_distance>  <hint>  <args>
 --   c  <key>  <type>  <value>
 --
 -- The three trailing gesture fields were added after the first release, so they
@@ -76,7 +84,7 @@ local recorded = {
       spec.scale or "",
       spec.zoom_level or "",
       spec.disable_inhibit == true and "true" or "",
-      "", "", "", "")
+      "", "", "", "", "")
   end,
 
   -- Only the gestures:* subtree is the panel's business.
@@ -99,36 +107,49 @@ o = inert()
 --
 -- This has to be a real global: the _G fallback below hands out inert tables for
 -- undefined names, and an inert table would silently record nothing.
+local function recordRun(spec, forceDouble)
+  if type(spec) ~= "table" then return end
+  local double = forceDouble or spec.double == true
+  emit("g",
+    tonumber(spec.fingers) or 0,
+    spec.direction or "",
+    spec.action or "",
+    "", spec.mods or "", "",
+    false,            -- editable, not a callback the panel has to shy away from
+    "", "", "",
+    double and "true" or "",
+    tonumber(spec.within_ms) or 0,
+    tonumber(spec.min_distance) or 0,
+    spec.hint or "",
+    spec.args or "")
+end
+
 luddite = {
-  double = function(spec)
-    if type(spec) ~= "table" then return end
-    emit("g",
-      tonumber(spec.fingers) or 0,
-      spec.direction or "",
-      spec.action or "",
-      "", spec.mods or "", "",
-      false,          -- editable, not a callback the panel has to shy away from
-      "", "", "",
-      "true",
-      tonumber(spec.within_ms) or 0,
-      tonumber(spec.min_distance) or 0,
-      spec.hint or "")
-  end,
+  run = recordRun,
+  -- What the helper was called before it also handled dispatchers. A block
+  -- written by the older panel and not yet re-saved still has to read.
+  double = function(spec) return recordRun(spec, true) end,
 }
 
 -- Undefined globals in a personal config must not abort the read.
 setmetatable(_G, { __index = function() return inert() end })
 
+local args, checkOnly = arg, false
+if args[1] == "--check" then
+  checkOnly = true
+  args = { args[2], args[3] }
+end
+
 local source, name
-if arg[1] == "-e" then
-  source, name = arg[2] or "", "luddite-gestures-segment"
+if args[1] == "-e" then
+  source, name = args[2] or "", "luddite-gestures-segment"
 else
-  local file, err = io.open(arg[1], "r")
+  local file, err = io.open(args[1], "r")
   if not file then
     io.stderr:write(tostring(err))
     os.exit(1)
   end
-  source, name = file:read("a"), arg[1]
+  source, name = file:read("a"), args[1]
   file:close()
 end
 
@@ -137,6 +158,10 @@ if not chunk then
   io.stderr:write(tostring(loadErr))
   os.exit(1)
 end
+
+-- It compiles. That is the whole of --check: nothing is run, and nothing is
+-- printed, so the caller reads the exit status alone.
+if checkOnly then os.exit(0) end
 
 local ok, runErr = pcall(chunk)
 if not ok then

@@ -25,15 +25,28 @@ gestures stay — they are plain Lua in the file Hyprland already reads.
 
 | Section | What is there |
 |---|---|
-| **Gestures** | Finger count, direction, action and held modifiers, plus the fields each action actually uses — a mode for fullscreen, a workspace name for special, a scale for scroll, a zoom level for zoom |
+| **Gestures** | Finger count, direction, action and held modifiers, plus the fields each action actually uses — a mode for fullscreen, a workspace name for special, a scale for scroll, arguments for a dispatcher. Each gesture is banded in the theme's own colours so a column of them does not read as one wall |
 | **Written by hand** | Gestures found elsewhere in `input.lua`, read-only, shown so conflicts make sense |
 | **Feel** | Swipe distance, commit threshold, flick speed, direction lock, create-new-workspace, swipe-forever, invert, close timeout |
 
 Directions are `left`, `right`, `up`, `down`, `horizontal`, `vertical`, `swipe`,
-`pinch`, `pinchin` and `pinchout`. Actions are `workspace`, `move`, `close`,
-`fullscreen`, `float`, `special`, `resize`, `scroll_move` and `cursor_zoom`.
-Both lists were read out of Hyprland 0.56.2 by feeding it candidates until it
-complained, rather than copied from documentation.
+`pinch`, `pinchin` and `pinchout`. The built-in actions are `workspace`, `move`,
+`close`, `fullscreen`, `float`, `special`, `resize`, `scroll_move` and
+`cursor_zoom`. Both lists were read out of Hyprland 0.56.2 by feeding it
+candidates until it complained, rather than copied from documentation.
+
+**Does** offers more than those nine, though. Underneath them sit all 51
+dispatchers — everything you could put on a keybind, walked out of the running
+compositor rather than copied from anywhere — so a gesture can do whatever a key
+can. Pick one and a field appears for its arguments, written the way a keybind
+writes them: `{ direction = "l" }`, `"magic"`, or nothing at all. The list is
+long, so the control is searchable.
+
+Hyprland's gesture parser only knows the nine, so a gesture on a dispatcher is a
+Lua callback — which the panel writes, and reads back into the same dropdowns.
+Argument text becomes Lua in your config, so nothing is written until it has been
+compiled: a save that would not parse is refused rather than saved and
+apologised for once `input.lua` is already broken.
 
 Hyprland is looser about spelling than the dropdown is: it takes `l`, `horiz`,
 `VERT` and `zoomin` as well as the long names, and its own parser reports every
@@ -88,6 +101,7 @@ It is offered where it can be got right, and nowhere else:
 
 | | Guard offered | Why |
 |---|---|---|
+| any dispatcher | yes | The call is yours, argument text and all — there is nothing here for this side to get wrong |
 | `close`, `float` | yes | Discrete, and dispatched with no argument at all |
 | `fullscreen`, `special` | no | Their dispatchers take an argument whose Lua spelling could not be pinned down — `hl.dsp.window.fullscreen("0")` and `("1")` both produced plain fullscreen, so the argument appears to be ignored |
 | `workspace`, `move`, `resize`, `scroll_move`, `cursor_zoom` | no | Continuous: they track your fingers 1:1, and there is no "twice" to speak of |

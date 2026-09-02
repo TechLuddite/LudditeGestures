@@ -21,6 +21,8 @@ const Schema = load("Schema.js", [
   "FINGERS_MIN", "FINGERS_MAX", "SCALE_MIN", "SCALE_MAX",
   "FIELDS", "FIELD_NAMES", "DIRECTION_ALIASES",
   "GUARDABLE_ACTIONS", "DOUBLE_DIRECTIONS", "DOUBLE_FIELDS", "canDouble",
+  "DISPATCHERS", "DISPATCH_PREFIX", "ACTION_OPTIONS", "dispatchAction",
+  "isDispatchAction", "dispatcherOf",
   "tunableFor", "isValidDirection", "isValidAction",
   "actionFields", "badModifier", "defaultMode", "canonicalDirection",
   "fieldDefault", "fieldEmpty", "fieldSpec", "modsToList", "modsFromList",
@@ -29,7 +31,8 @@ const Schema = load("Schema.js", [
 const Lua = load("LuaGestures.js", [
   "BEGIN_FENCE", "END_FENCE", "renderGesture", "renderTunables", "renderBody",
   "renderBlock", "splitBlock", "applyBlock", "parseHarness", "findConflicts",
-  "findFieldErrors", "luaString", "renderDoubleGesture", "DOUBLE_HELPER"
+  "findFieldErrors", "luaString", "renderHelperGesture", "RUN_HELPER",
+  "needsHelper", "dispatchCall", "badLuaArgs"
 ])
 
 let failures = 0
@@ -251,30 +254,35 @@ check("every doubleable direction is a real direction",
   Schema.DOUBLE_DIRECTIONS.every(d => Schema.isValidDirection(d)))
 
 check("a guarded gesture renders as a helper call, not a bare hl.gesture",
-  Lua.renderDoubleGesture(GUARDED)
-    === 'luddite.double({ fingers = 4, direction = "down", action = "close", '
-      + 'within_ms = 700, min_distance = 40, hint = "Swipe down again to close" })',
-  Lua.renderDoubleGesture(GUARDED))
+  Lua.renderHelperGesture(GUARDED, Schema)
+    === 'luddite.run({ fingers = 4, direction = "down", action = "close", '
+      + 'double = true, within_ms = 700, min_distance = 40, '
+      + 'hint = "Swipe down again to close", '
+      + 'run = function() return hl.dsp.window.close() end })',
+  Lua.renderHelperGesture(GUARDED, Schema))
 
 const guardedBody = Lua.renderBody([GUARDED], {}, Schema)
 check("the helper is written when something uses it",
-  guardedBody.indexOf("function luddite.double(s)") !== -1)
+  guardedBody.indexOf("function luddite.run(s)") !== -1)
 check("the helper is not written when nothing does",
   Lua.renderBody([{ fingers: 3, direction: "up", action: "close" }], {}, Schema)
     .indexOf("luddite") === -1)
 check("the helper is written once, however many gestures use it",
   Lua.renderBody([GUARDED, Object.assign({}, GUARDED, { fingers: 5 })], {}, Schema)
-    .split("function luddite.double").length === 2)
+    .split("function luddite.run").length === 2)
 
 // The line that makes the round trip work: under Hyprland the global is nil and
 // the helper defines itself; under read.lua it is a recorder, so the definition
 // is skipped and the calls report themselves as data.
 check("the helper defers to a `luddite` the reader can provide",
-  /^local luddite = luddite$/m.test(Lua.DOUBLE_HELPER)
-    && /^if not luddite then$/m.test(Lua.DOUBLE_HELPER))
-check("the helper only ever dispatches the argument-free dispatchers",
-  (Lua.DOUBLE_HELPER.match(/hl\.dsp\.window\.(close|float)\(\)/g) || []).length === 2
-    && Lua.DOUBLE_HELPER.indexOf("fullscreen") === -1)
+  /^local luddite = luddite$/m.test(Lua.RUN_HELPER)
+    && /^if not luddite then$/m.test(Lua.RUN_HELPER))
+// The helper never names a dispatcher itself: every call it makes comes from the
+// `run` thunk the renderer wrote, so there is one place a wrong call can come
+// from and it is the one the panel controls.
+check("the helper dispatches only what the gesture handed it",
+  (Lua.RUN_HELPER.match(/hl\.dispatch\(s\.run\(\)\)/g) || []).length === 2
+    && Lua.RUN_HELPER.indexOf("hl.dsp.window") === -1)
 
 // A guarded gesture still registers as an ordinary gesture of that direction, so
 // it has to keep taking part in conflict detection.
@@ -291,6 +299,71 @@ check("a guard with an out-of-range gap is an error",
   Lua.findFieldErrors([Object.assign({}, GUARDED, { double_within_ms: 9000 })], Schema).length > 0)
 check("a well-formed guard is not an error",
   Lua.findFieldErrors([GUARDED], Schema).length === 0)
+
+// ---------------------------------------------------------------------------
+// The nine built-in gesture actions are all Hyprland's gesture parser knows, but
+// a keybind can reach fifty-one dispatchers. A gesture bound to one of those is
+// a Lua callback that dispatches -- the same call the keybind makes -- and the
+// panel writes it, so the whole vocabulary is in the dropdown.
+console.log("\ndispatcher actions")
+
+const DISPATCH = {
+  fingers: 3, direction: "left", action: "dispatch:focus", mods: "",
+  dispatch_args: '{ direction = "l" }',
+}
+
+check("the dropdown offers every built-in action and every dispatcher",
+  Schema.ACTION_OPTIONS.length === Schema.ACTIONS.length + Schema.DISPATCHERS.length)
+check("the built-in actions come first, where most gestures will want them",
+  Schema.ACTION_OPTIONS.slice(0, Schema.ACTIONS.length)
+    .every((o, i) => o.value === Schema.ACTIONS[i].value))
+check("a dispatcher value can never collide with a built-in action",
+  Schema.ACTIONS.every(a => a.value.indexOf(Schema.DISPATCH_PREFIX) === -1)
+    && Schema.ACTIONS.every(a => a.value.indexOf(":") === -1))
+check("a dispatcher action round-trips through its spelling",
+  Schema.dispatcherOf(Schema.dispatchAction("window.close")) === "window.close")
+check("a dispatcher the compositor does not have is not a valid action",
+  !Schema.isValidAction("dispatch:window.explode")
+    && Schema.isValidAction("dispatch:window.close"))
+check("a dispatcher action asks for its argument text and nothing else",
+  Schema.actionFields("dispatch:focus").join() === "dispatch_args")
+check("a dispatcher action can carry the guard",
+  Schema.canDouble("dispatch:window.kill", "down"))
+
+check("a dispatcher gesture renders the call a keybind would make",
+  Lua.dispatchCall(DISPATCH, Schema) === 'hl.dsp.focus({ direction = "l" })',
+  Lua.dispatchCall(DISPATCH, Schema))
+check("a dispatcher with no arguments renders empty parentheses",
+  Lua.dispatchCall({ action: "dispatch:window.center" }, Schema)
+    === "hl.dsp.window.center()")
+check("a dispatcher gesture needs the helper; a built-in one does not",
+  Lua.needsHelper(DISPATCH, Schema)
+    && !Lua.needsHelper({ action: "close" }, Schema))
+check("the rendered call keeps both the machine-readable action and its args",
+  Lua.renderHelperGesture(DISPATCH, Schema).indexOf('action = "dispatch:focus"') !== -1
+    && Lua.renderHelperGesture(DISPATCH, Schema).indexOf('args = "{ direction = \\"l\\" }"') !== -1,
+  Lua.renderHelperGesture(DISPATCH, Schema))
+
+// Argument text becomes Lua in the file. A typo would be a syntax error in the
+// whole of input.lua, so it is checked twice: cheaply here so Save greys out
+// while you type, and properly by `read.lua --check` before anything is written.
+check("unbalanced brackets in argument text are caught",
+  Lua.badLuaArgs("{ a = 1") !== "" && Lua.badLuaArgs("x)") !== "")
+check("an unclosed quote is caught", Lua.badLuaArgs('a"b') !== "")
+check("a quoted bracket is not mistaken for a real one",
+  Lua.badLuaArgs('{ name = "a)b" }') === "")
+check("an escaped quote inside a string is not mistaken for the end of it",
+  Lua.badLuaArgs('{ name = "a\\"b" }') === "")
+check("a comment is refused, since the rest of the line would vanish",
+  Lua.badLuaArgs("1 -- nope") !== "")
+check("a newline is refused", Lua.badLuaArgs("a\nb") !== "")
+check("ordinary argument text passes",
+  Lua.badLuaArgs('{ direction = "l" }') === "" && Lua.badLuaArgs("") === ""
+    && Lua.badLuaArgs('"magic"') === "")
+check("bad argument text blocks the save",
+  Lua.findFieldErrors([Object.assign({}, DISPATCH, { dispatch_args: "{ a = 1" })], Schema).length > 0)
+check("good argument text does not",
+  Lua.findFieldErrors([DISPATCH], Schema).length === 0)
 
 // ---------------------------------------------------------------------------
 console.log("\nfence splicing")
@@ -464,13 +537,14 @@ if (cardMatch) {
     trigger <= available,
     `line needs ${trigger}px, card offers ${available}px`)
 
-  // Line two carries either the action's own field or the double-swipe guard,
-  // never both -- every guardable action has no fields of its own, which is the
-  // property that keeps this line to one case at a time.
+  // Line two carries the action's own field, the guard, or -- for a dispatcher,
+  // which is guardable and brings argument text -- both. No action asks for more
+  // than one field of its own, which is what bounds the first half of it.
   check("no action asks for more fields than the detail line was sized for",
-    Schema.ACTIONS.every(a => a.fields.length <= 1),
+    Schema.ACTIONS.every(a => a.fields.length <= 1)
+      && Schema.DISPATCHERS.every(d => Schema.actionFields(Schema.dispatchAction(d)).length <= 1),
     "widest: " + Math.max(...Schema.ACTIONS.map(a => a.fields.length)))
-  check("a guardable action brings no field of its own, so the two never collide",
+  check("the two built-in guardable actions bring no field, so they stay narrow",
     Schema.GUARDABLE_ACTIONS.every(v => Schema.actionFields(v).length === 0))
 
   const TOGGLE = 44
@@ -483,11 +557,19 @@ if (cardMatch) {
   check("the detail line fits the card with the guard fully open",
     detailGuard <= available, `line needs ${detailGuard}px, card offers ${available}px`)
 
+  // The widest case there is: a dispatcher gesture, which brings argument text,
+  // with the guard open beside it.
+  const detailWidest = STYLE.dropdownWidth + TOGGLE + 2 * STYLE.numberFieldWidth
+    + STYLE.dropdownWidth + 4 * STYLE.controlGap + STYLE.panelPadding
+  check("the detail line fits a guarded dispatcher, the widest case there is",
+    detailWidest <= available,
+    `line needs ${detailWidest}px, card offers ${available}px`)
+
   // And if a theme scales things up, the row must still be able to shrink
   // rather than shove the sections below it off-screen.
   const rowSrc = fs.readFileSync(path.join(root, "GestureRow.qml"), "utf8")
   check("every wide control in a row can shrink",
-    (rowSrc.match(/Layout\.minimumWidth/g) || []).length >= 11,
+    (rowSrc.match(/Layout\.minimumWidth/g) || []).length >= 12,
     "each Dropdown/TextField/MultiSelect needs a Layout.minimumWidth")
   check("no control in a row is pinned with a fixed width",
     !/^\s*width:\s*Style\.spacing\.dropdownWidth/m.test(rowSrc))
@@ -526,6 +608,21 @@ check("GestureRow emits the row number it was given",
 //
 // Source checks again: the failure is in Repeater's model semantics, which no
 // pure-JS test can reach.
+// A column of gestures runs together into one wall, so each row is banded. The
+// colours come from the theme's own fill helpers rather than anything fixed, so
+// a themed panel stays themed.
+console.log("\nrow banding")
+
+check("rows alternate on their index",
+  /rowIndex % 2 === 0/.test(rowSrc))
+check("the banding uses the theme's fills, not hard-coded colours",
+  /Style\.normalFillFor\(/.test(rowSrc) && /Style\.hoverFillFor\(/.test(rowSrc))
+check("no colour in a row is written as a literal",
+  !/color:\s*"#/.test(rowSrc))
+check("the banded row still sizes itself to its content",
+  /implicitHeight:\s*content\.implicitHeight/.test(rowSrc))
+
+// ---------------------------------------------------------------------------
 console.log("\ngesture table stability")
 
 check("the gesture Repeater is driven by the row count, not the array",
@@ -544,7 +641,7 @@ check("the delegate does not depend on modelData, which a count model has none o
 const SELF_ASSIGNING = [
   ["Dropdown", /value = Qt\.binding/g, 3],
   ["MultiSelect", /values = Qt\.binding/g, 1],
-  ["TextField", /text = Qt\.binding/g, 3],
+  ["TextField", /text = Qt\.binding/g, 4],
 ]
 for (const [what, pattern, count] of SELF_ASSIGNING) {
   check(`every ${what} in a row re-arms its binding after the user picks`,
@@ -678,6 +775,62 @@ if (!lua) {
       + guarded], { stdio: "pipe" })
   } catch (e) { helperRan = false }
   check("the helper defines itself and runs when no reader is present", helperRan)
+
+  // A dispatcher gesture, end to end: the panel writes a callback, Hyprland runs
+  // it, and read.lua must hand it back as a row in the dropdowns.
+  const dispatchBody = Lua.renderBody([{
+    fingers: 3, direction: "left", action: "dispatch:focus", mods: "SUPER",
+    dispatch_args: '{ direction = "l" }',
+  }], {}, Schema)
+  const dispatchBack = Lua.parseHarness(
+    execFileSync("lua", [path.join(root, "read.lua"), "-e", dispatchBody], { encoding: "utf8" }))
+
+  check("a dispatcher gesture reads back as one editable gesture",
+    dispatchBack.gestures.length === 1 && dispatchBack.gestures[0].custom === false,
+    JSON.stringify(dispatchBack.gestures))
+  check("a dispatcher gesture reads back with its dispatcher and arguments",
+    dispatchBack.gestures[0].action === "dispatch:focus"
+      && dispatchBack.gestures[0].dispatch_args === '{ direction = "l" }'
+      && dispatchBack.gestures[0].mods === "SUPER",
+    JSON.stringify(dispatchBack.gestures[0]))
+  check("a dispatcher gesture survives a full round trip byte-for-byte",
+    Lua.renderBody(dispatchBack.gestures, {}, Schema) === dispatchBody)
+
+  // The helper was called luddite.double before it also handled dispatchers. A
+  // block written by the older panel and not yet re-saved still has to read, or
+  // upgrading would silently empty someone's gesture list.
+  const legacy = 'luddite.double({ fingers = 4, direction = "down", action = "close", '
+    + 'within_ms = 700, min_distance = 40, hint = "Swipe down again to close" })'
+  const legacyBack = Lua.parseHarness(
+    execFileSync("lua", [path.join(root, "read.lua"), "-e", legacy], { encoding: "utf8" }))
+  check("a block from the previous helper name still reads",
+    legacyBack.gestures.length === 1
+      && legacyBack.gestures[0].double === true
+      && legacyBack.gestures[0].action === "close"
+      && legacyBack.gestures[0].double_within_ms === 700,
+    JSON.stringify(legacyBack.gestures))
+
+  // --check is the gate the panel puts in front of every save, because argument
+  // text lands in the file as Lua and a typo there would take input.lua down.
+  function compiles(src) {
+    try {
+      execFileSync("lua", [path.join(root, "read.lua"), "--check", "-e", src], { stdio: "pipe" })
+      return true
+    } catch (e) { return false }
+  }
+  check("--check accepts a block the panel would write", compiles(dispatchBody))
+  check("--check rejects a block that would not compile",
+    !compiles('luddite.run({ fingers = 3, run = function() return hl.dsp.focus({ end })'))
+  check("--check rejects what broken argument text renders to",
+    !compiles(Lua.renderBody([{
+      fingers: 3, direction: "left", action: "dispatch:focus", dispatch_args: "{ a = ",
+    }], {}, Schema)))
+
+  // --check must not run anything: a config that executes on read would be a
+  // side effect every time the Save button is pressed.
+  const sentinel = path.join(root, "test", "CHECK-RAN")
+  compiles('os.execute("touch ' + sentinel + '")')
+  check("--check compiles without running a line of it", !fs.existsSync(sentinel))
 
   // A file that is not valid Lua must fail loudly rather than read as empty.
   let threw = false

@@ -248,13 +248,28 @@ Item {
 
   // --------------------------------------------------------------- saving
 
+  // A dispatcher gesture carries argument text the user typed, and that text
+  // lands in the file as Lua. One typo there would be a syntax error in the
+  // whole of input.lua -- taking the rest of the config down with it, and
+  // leaving the panel with nothing to show you but an unreadable block. So the
+  // rendered body is compiled before any of it is written, and a body that does
+  // not compile is refused rather than saved and apologised for afterwards.
+  property string pendingBody: ""
+
   function save() {
     if (blocked) { root.statusText = "Fix the errors above first"; return }
     root.errorText = ""
+    root.statusText = "Checking…"
+    root.pendingBody = Lua.renderBody(gestures, tunables, Schema)
+    checkProc.command = ["lua", pluginDir + "/read.lua", "--check", "-e", root.pendingBody]
+    checkProc.running = true
+  }
+
+  function writeChecked() {
     root.statusText = "Saving…"
     root.selfWrite = true
-    var body = Lua.renderBody(gestures, tunables, Schema)
-    inputFile.setText(Lua.applyBlock(inputFile.text(), body))
+    inputFile.setText(Lua.applyBlock(inputFile.text(), root.pendingBody))
+    root.pendingBody = ""
   }
 
   function noteSaved() {
@@ -305,6 +320,22 @@ Item {
         root.readFailed = true
         root.errorText = "input.lua did not parse: " + String(text).trim()
       }
+    }
+  }
+
+  // Compiles the block the save is about to write. Nothing is printed on
+  // success, so the exit status is the whole answer; stderr carries Lua's own
+  // message, which names the line and says what it choked on.
+  Process {
+    id: checkProc
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function (code) {
+      if (code === 0) { root.writeChecked(); return }
+      root.pendingBody = ""
+      root.statusText = ""
+      var detail = String(checkProc.stderr.text || "").trim()
+      root.errorText = "Not saved — that would not compile: "
+        + (detail !== "" ? detail : "the block is not valid Lua")
     }
   }
 

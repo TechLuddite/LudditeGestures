@@ -58,26 +58,30 @@ function renderGesture(g) {
   return "hl.gesture({ " + parts.join(", ") + " })"
 }
 
-// ------------------------------------------------------- the double-swipe guard
+// ------------------------------------------------ gestures the panel writes Lua for
 //
-// Hyprland has no double-swipe direction, so "twice, quickly" has to be timed in
-// Lua. The panel writes that Lua itself rather than leaving you to hand-write a
-// callback it would then refuse to manage.
+// Two kinds of gesture are not a plain hl.gesture call:
+//
+//   * a dispatcher gesture, which runs the same call a keybind would, and
+//   * a guarded one, which only fires on the second swipe.
+//
+// Both are Lua callbacks, so the panel writes the callback rather than leaving
+// you to hand-write one it would then refuse to manage. One helper covers both.
 //
 // The trick that keeps it readable BOTH ways is the first line. Under Hyprland
 // the global `luddite` is nil, so the helper defines itself and registers real
 // gestures. Under read.lua the global is a recorder, so the definition is
-// skipped and every luddite.double(...) call reports its arguments as data --
-// which is how a guarded gesture comes back into the dropdowns instead of
-// reading as an opaque callback. Lua reading Lua, same as the rest.
-var DOUBLE_HELPER = [
-  "-- A double swipe is not something Hyprland matches on its own; this is what",
-  "-- Luddite Gestures writes so the guard can be a checkbox. Reading the block",
-  "-- back skips this definition, so the calls below stay editable in the panel.",
+// skipped and every luddite.run(...) call reports its arguments as data -- which
+// is how these come back into the dropdowns instead of reading as an opaque
+// callback. Lua reading Lua, same as the rest.
+var RUN_HELPER = [
+  "-- Dispatcher gestures and \"twice, quickly\" guards are Lua callbacks, which",
+  "-- Hyprland has no gesture action for. This is what Luddite Gestures writes so",
+  "-- both stay editable in the panel; reading the block back skips this.",
   "local luddite = luddite",
   "if not luddite then",
   "  luddite = {}",
-  "  function luddite.double(s)",
+  "  function luddite.run(s)",
   "    local last, travelled = nil, 0",
   "    hl.gesture({",
   "      fingers = s.fingers,",
@@ -93,14 +97,14 @@ var DOUBLE_HELPER = [
   "        end,",
   "        finish = function(e)",
   "          if e.cancelled or travelled < (s.min_distance or 0) then return end",
+  "          if not s.double then",
+  "            hl.dispatch(s.run())",
+  "            return",
+  "          end",
   "          local now = e.time_ms or 0",
   "          if last and (now - last) <= (s.within_ms or 700) then",
   "            last = nil",
-  "            if s.action == \"float\" then",
-  "              hl.dispatch(hl.dsp.window.float())",
-  "            else",
-  "              hl.dispatch(hl.dsp.window.close())",
-  "            end",
+  "            hl.dispatch(s.run())",
   "          else",
   "            last = now",
   "            if s.hint and s.hint ~= \"\" then",
@@ -114,19 +118,73 @@ var DOUBLE_HELPER = [
   "end"
 ].join("\n")
 
-function isDouble(g) { return !!(g && g.double) }
+// A gesture Hyprland's own parser cannot express, so the panel writes Lua.
+function needsHelper(g, schema) {
+  return !!(g && (g.double || schema.isDispatchAction(g.action)))
+}
 
-function renderDoubleGesture(g) {
+// The call the gesture makes. A dispatcher action drops the user's own argument
+// text between the parentheses, exactly as a keybind would write it; the two
+// guardable built-ins map to the dispatcher that matches them.
+function dispatchCall(g, schema) {
+  if (schema.isDispatchAction(g.action))
+    return "hl.dsp." + schema.dispatcherOf(g.action) + "(" + String(g.dispatch_args || "") + ")"
+  if (g.action === "float") return "hl.dsp.window.float()"
+  return "hl.dsp.window.close()"
+}
+
+// `run` is what Hyprland calls; `action` and `args` beside it are what the panel
+// reads back. The renderer always writes all three from the same two fields, so
+// they cannot drift -- and the block is rewritten whole on every save.
+function renderHelperGesture(g, schema) {
   var parts = [
     "fingers = " + luaNumber(g.fingers),
     "direction = " + luaString(g.direction),
     "action = " + luaString(g.action)
   ]
   if (g.mods) parts.push("mods = " + luaString(g.mods))
-  parts.push("within_ms = " + luaNumber(g.double_within_ms))
-  parts.push("min_distance = " + luaNumber(g.double_min_distance))
-  if (g.double_hint) parts.push("hint = " + luaString(g.double_hint))
-  return "luddite.double({ " + parts.join(", ") + " })"
+  if (schema.isDispatchAction(g.action) && g.dispatch_args)
+    parts.push("args = " + luaString(g.dispatch_args))
+  if (g.double) {
+    parts.push("double = true")
+    parts.push("within_ms = " + luaNumber(g.double_within_ms))
+    parts.push("min_distance = " + luaNumber(g.double_min_distance))
+    if (g.double_hint) parts.push("hint = " + luaString(g.double_hint))
+  }
+  parts.push("run = function() return " + dispatchCall(g, schema) + " end")
+  return "luddite.run({ " + parts.join(", ") + " })"
+}
+
+// The argument text goes into the file as Lua, so a typo there is a syntax error
+// in the whole of input.lua -- which would take the rest of the config down with
+// it and leave the panel unable to show you the gesture to fix. read.lua --check
+// is the real gate, run before anything is written; this is the cheap version,
+// so the Save button can grey out while you are still typing.
+function badLuaArgs(args) {
+  var text = String(args || "")
+  if (text === "") return ""
+  if (/[\r\n]/.test(text)) return "must be a single line"
+  if (text.indexOf("--") !== -1) return "cannot contain a Lua comment"
+
+  var pairs = { ")": "(", "]": "[", "}": "{" }
+  var stack = []
+  var quote = ""
+  for (var i = 0; i < text.length; i++) {
+    var c = text.charAt(i)
+    if (quote) {
+      if (c === "\\") { i++; continue }
+      if (c === quote) quote = ""
+      continue
+    }
+    if (c === '"' || c === "'") { quote = c; continue }
+    if (c === "(" || c === "[" || c === "{") { stack.push(c); continue }
+    if (pairs.hasOwnProperty(c)) {
+      if (stack.pop() !== pairs[c]) return "has a bracket that does not match"
+    }
+  }
+  if (quote) return "has an unclosed quote"
+  if (stack.length > 0) return "has an unclosed bracket"
+  return ""
 }
 
 // Only tunables that differ from the Hyprland default are written, so the block
@@ -148,22 +206,24 @@ function renderTunables(tunables, schema) {
   return "hl.config({\n  gestures = {\n" + lines.join("\n") + "\n  },\n})"
 }
 
-// Gestures keep their file order whether or not they are guarded, because that
-// order is what decides which one Hyprland registers first. The helper is only
-// written when something actually uses it.
+// Gestures keep their file order whichever kind they are, because that order is
+// what decides which one Hyprland registers first. The helper is only written
+// when something actually uses it.
 function renderBody(gestures, tunables, schema) {
   var chunks = []
   var config = renderTunables(tunables, schema)
   if (config) chunks.push(config)
 
   var list = gestures || []
-  var needsHelper = false
-  for (var i = 0; i < list.length; i++) if (isDouble(list[i])) { needsHelper = true; break }
-  if (needsHelper) chunks.push(DOUBLE_HELPER)
+  var wantsHelper = false
+  for (var i = 0; i < list.length; i++) if (needsHelper(list[i], schema)) { wantsHelper = true; break }
+  if (wantsHelper) chunks.push(RUN_HELPER)
 
   var lines = []
   for (var k = 0; k < list.length; k++)
-    lines.push(isDouble(list[k]) ? renderDoubleGesture(list[k]) : renderGesture(list[k]))
+    lines.push(needsHelper(list[k], schema)
+      ? renderHelperGesture(list[k], schema)
+      : renderGesture(list[k]))
   if (lines.length > 0) chunks.push(lines.join("\n"))
   return chunks.join("\n\n")
 }
@@ -214,7 +274,7 @@ function applyBlock(text, body) {
 //
 //   g  <fingers>  <direction>  <action>  <mode>  <mods>  <workspace_name>  <custom>
 //      <scale>  <zoom_level>  <disable_inhibit>
-//      <double>  <within_ms>  <min_distance>  <hint>
+//      <double>  <within_ms>  <min_distance>  <hint>  <args>
 //   c  <key>  <type>  <value>
 //
 // The last three arrived after the first release and are read defensively, so
@@ -240,7 +300,8 @@ function parseHarness(stdout) {
         double: f[11] === "true",
         double_within_ms: f[12] ? Number(f[12]) || 0 : 0,
         double_min_distance: f[13] ? Number(f[13]) || 0 : 0,
-        double_hint: f[14] || ""
+        double_hint: f[14] || "",
+        dispatch_args: f[15] || ""
       })
     } else if (f[0] === "c" && f.length >= 4) {
       result.tunables[f[1]] = f[2] === "number" ? Number(f[3])
@@ -318,6 +379,13 @@ function findFieldErrors(gestures, schema) {
       errors.push({ index: i, text: "Hyprland needs at least " + schema.FINGERS_MIN + " fingers" })
     else if (g.fingers > schema.FINGERS_MAX)
       errors.push({ index: i, text: "Hyprland takes at most " + schema.FINGERS_MAX + " fingers" })
+    // Argument text becomes Lua in the file, so a typo takes the whole config
+    // down. read.lua --check is the real gate; this greys out Save first.
+    if (schema.isDispatchAction(g.action)) {
+      var badArgs = badLuaArgs(g.dispatch_args)
+      if (badArgs) errors.push({ index: i, text: "The argument text " + badArgs })
+    }
+
     // The guard is only offered where the generated Lua can be got right, so a
     // gesture carrying it anywhere else came from a hand-edit and would write
     // out a call the helper cannot honour.
