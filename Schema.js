@@ -77,6 +77,39 @@ var ACTIONS = [
   { value: "cursor_zoom", label: "Zoom the screen",    fields: ["zoom_level"] }
 ]
 
+// ------------------------------------------------------- the double-swipe guard
+//
+// Hyprland matches one swipe at a time -- there is no double-swipe direction,
+// and no field to ask for one. A "twice, quickly" guard has to be timed in Lua,
+// which the panel writes for you (see LuaGestures.renderDoubleHelper) rather
+// than leaving you to hand-write a callback it then refuses to manage.
+//
+// It is offered only where it can be got right:
+//
+//   * The action must be discrete AND dispatched with no argument. `close` and
+//     `float` qualify. `fullscreen` and `special` do not: their dispatchers take
+//     an argument whose Lua spelling could not be pinned down -- dispatching
+//     hl.dsp.window.fullscreen("0") and ("1") produced the same real-fullscreen
+//     state, so the argument appears to be ignored, and generating a call whose
+//     behaviour cannot be predicted into someone's config is not worth a
+//     checkbox. The continuous actions (workspace, move, resize, scroll_move,
+//     cursor_zoom) track fingers 1:1 and have no "twice" to speak of.
+//
+//   * The direction must be a swipe. The guard measures how far the fingers
+//     travelled, out of the `delta` on each update; a pinch reports its motion
+//     differently, so the box stays hidden there.
+var GUARDABLE_ACTIONS = ["close", "float"]
+var DOUBLE_DIRECTIONS = ["left", "right", "up", "down", "horizontal", "vertical", "swipe"]
+
+function canDouble(action, direction) {
+  return GUARDABLE_ACTIONS.indexOf(action) !== -1
+    && DOUBLE_DIRECTIONS.indexOf(canonicalDirection(direction)) !== -1
+}
+
+// The knobs the guard exposes, and what they start at. Defaults are the ones
+// that were already working in a hand-written config on a real touchpad.
+var DOUBLE_FIELDS = ["double_within_ms", "double_min_distance", "double_hint"]
+
 // Only meaningful for action = "fullscreen". Both values are written out
 // explicitly rather than leaning on Hyprland's default for an omitted mode:
 // a hand-written `mode = "fullscreen"` must survive a round trip through the
@@ -109,6 +142,18 @@ var FIELDS = {
   },
   zoom_level: {
     kind: "text", label: "Zoom level", placeholder: "2, or +0.5", def: ""
+  },
+  double_within_ms: {
+    kind: "int", label: "Within", unit: "ms",
+    min: 200, max: 2000, step: 50, def: 700
+  },
+  double_min_distance: {
+    kind: "int", label: "Min travel", unit: "px",
+    min: 0, max: 400, step: 10, def: 40
+  },
+  double_hint: {
+    kind: "text", label: "Hint after the first swipe",
+    placeholder: "Leave empty for no hint", def: "Swipe again to confirm"
   }
 }
 
@@ -132,7 +177,8 @@ var FIELD_NAMES = ["mode", "workspace_name", "scale", "zoom_level"]
 
 function fieldEmpty(name) {
   var spec = FIELDS[name]
-  return (spec && spec.kind === "percent") ? 0 : ""
+  if (!spec) return ""
+  return (spec.kind === "percent" || spec.kind === "int") ? 0 : ""
 }
 
 var MODIFIERS = ["SUPER", "SHIFT", "ALT", "CTRL"]

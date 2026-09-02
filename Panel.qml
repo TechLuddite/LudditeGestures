@@ -97,6 +97,9 @@ Item {
       scale: Number(g.scale) || 0, zoom_level: g.zoom_level || "",
       // Never edited here, only carried, so a hand-written one survives a save.
       disable_inhibit: !!g.disable_inhibit,
+      double: !!g.double, double_within_ms: Number(g.double_within_ms) || 0,
+      double_min_distance: Number(g.double_min_distance) || 0,
+      double_hint: g.double_hint || "",
       managed: managed, sourceIndex: sourceIndex
     }
   }
@@ -176,7 +179,8 @@ Item {
   function editGesture(index, field, value) {
     if (index < 0 || index >= gestures.length) return
     var next = JSON.parse(JSON.stringify(gestures))
-    next[index][field] = (field === "fingers" || field === "scale") ? Number(value) : value
+    var numeric = ["fingers", "scale", "double_within_ms", "double_min_distance"]
+    next[index][field] = numeric.indexOf(field) !== -1 ? Number(value) : value
     // Dropping to an action that does not take a field should not leave the old
     // value behind to be written out again; picking one that does should not
     // leave it blank, so what the row shows is what the file will say.
@@ -188,6 +192,24 @@ Item {
         else if (!next[index][name]) next[index][name] = Schema.fieldDefault(name)
       }
     }
+
+    // The guard only exists for some action/direction pairs, so changing either
+    // can take it away -- and it must not be left set on a gesture that would
+    // then write a call the helper cannot honour. Turning it on fills in the
+    // knobs, for the same reason a fullscreen action gets an explicit mode.
+    var g = next[index]
+    if (!Schema.canDouble(g.action, g.direction)) g.double = false
+    if (!g.double) {
+      for (var e = 0; e < Schema.DOUBLE_FIELDS.length; e++)
+        g[Schema.DOUBLE_FIELDS[e]] = Schema.fieldEmpty(Schema.DOUBLE_FIELDS[e])
+    } else if (field === "double") {
+      // Just switched on, so every knob starts at its default. They are filled
+      // unconditionally rather than only when unset: switching the guard off
+      // clears them, so there is nothing here worth preserving, and a zero
+      // travel floor is a real setting that "unset" cannot be told apart from.
+      for (var d = 0; d < Schema.DOUBLE_FIELDS.length; d++)
+        g[Schema.DOUBLE_FIELDS[d]] = Schema.fieldDefault(Schema.DOUBLE_FIELDS[d])
+    }
     root.gestures = next
     root.statusText = ""
   }
@@ -196,7 +218,9 @@ Item {
     var next = JSON.parse(JSON.stringify(gestures))
     next.push({ fingers: 3, direction: "up", action: "close",
                 mode: "", mods: "", workspace_name: "", scale: 0, zoom_level: "",
-                disable_inhibit: false, custom: false })
+                disable_inhibit: false, custom: false,
+                double: false, double_within_ms: 0, double_min_distance: 0,
+                double_hint: "" })
     root.gestures = next
     root.statusText = ""
   }

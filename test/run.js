@@ -20,6 +20,7 @@ const Schema = load("Schema.js", [
   "DIRECTIONS", "COVERAGE", "ACTIONS", "MODES", "MODIFIERS", "TUNABLES",
   "FINGERS_MIN", "FINGERS_MAX", "SCALE_MIN", "SCALE_MAX",
   "FIELDS", "FIELD_NAMES", "DIRECTION_ALIASES",
+  "GUARDABLE_ACTIONS", "DOUBLE_DIRECTIONS", "DOUBLE_FIELDS", "canDouble",
   "tunableFor", "isValidDirection", "isValidAction",
   "actionFields", "badModifier", "defaultMode", "canonicalDirection",
   "fieldDefault", "fieldEmpty", "fieldSpec", "modsToList", "modsFromList",
@@ -28,7 +29,7 @@ const Schema = load("Schema.js", [
 const Lua = load("LuaGestures.js", [
   "BEGIN_FENCE", "END_FENCE", "renderGesture", "renderTunables", "renderBody",
   "renderBlock", "splitBlock", "applyBlock", "parseHarness", "findConflicts",
-  "findFieldErrors", "luaString"
+  "findFieldErrors", "luaString", "renderDoubleGesture", "DOUBLE_HELPER"
 ])
 
 let failures = 0
@@ -180,8 +181,11 @@ check("the panel offers nothing Hyprland would reject",
   "extra: " + Schema.ACTIONS.map(a => a.value).filter(v => MEASURED_ACTIONS.indexOf(v) === -1).join(", "))
 check("every field an action asks for has a spec the row can draw",
   Schema.ACTIONS.every(a => a.fields.every(f => Schema.fieldSpec(f) !== null)))
-check("every field with a spec is one the reset loop knows about",
-  Object.keys(Schema.FIELDS).every(f => Schema.FIELD_NAMES.indexOf(f) !== -1))
+check("every field with a spec is reset by one loop or the other",
+  Object.keys(Schema.FIELDS).every(f =>
+    Schema.FIELD_NAMES.indexOf(f) !== -1 || Schema.DOUBLE_FIELDS.indexOf(f) !== -1))
+check("the action-field and guard-field lists do not overlap",
+  Schema.FIELD_NAMES.every(f => Schema.DOUBLE_FIELDS.indexOf(f) === -1))
 check("fingers spans the range the parser allows",
   Schema.FINGERS_MIN === 2 && Schema.FINGERS_MAX === 9)
 
@@ -214,6 +218,79 @@ check("a percent tunable at its default is still omitted",
 check("tunables away from default are written",
   Lua.renderTunables({ workspace_swipe_distance: 500 }, Schema)
     .indexOf("workspace_swipe_distance = 500") !== -1)
+
+// ---------------------------------------------------------------------------
+// Hyprland matches one swipe at a time, so a "twice, quickly" guard has to be
+// timed in Lua. The panel writes that Lua, which means it also has to be able to
+// read it back -- otherwise a guarded gesture would return as an opaque callback
+// and the checkbox would be a one-way door.
+console.log("\ndouble-swipe guard")
+
+const GUARDED = {
+  fingers: 4, direction: "down", action: "close", mode: "", mods: "",
+  workspace_name: "", scale: 0, zoom_level: "",
+  double: true, double_within_ms: 700, double_min_distance: 40,
+  double_hint: "Swipe down again to close",
+}
+
+check("the guard is offered for the zero-argument discrete actions",
+  Schema.canDouble("close", "down") && Schema.canDouble("float", "left"))
+check("the guard is refused for actions whose dispatcher takes an argument",
+  !Schema.canDouble("fullscreen", "down") && !Schema.canDouble("special", "down"),
+  "fullscreen/special dispatch with an argument this cannot pin down")
+check("the guard is refused for the continuous actions",
+  ["workspace", "move", "resize", "scroll_move", "cursor_zoom"]
+    .every(a => !Schema.canDouble(a, "down")))
+check("the guard is refused on a pinch, whose delta it cannot measure",
+  !Schema.canDouble("close", "pinch") && !Schema.canDouble("close", "pinchin"))
+check("the guard follows a direction alias to the same answer",
+  Schema.canDouble("close", "d") === Schema.canDouble("close", "down"))
+check("every guardable action is a real action",
+  Schema.GUARDABLE_ACTIONS.every(a => Schema.isValidAction(a)))
+check("every doubleable direction is a real direction",
+  Schema.DOUBLE_DIRECTIONS.every(d => Schema.isValidDirection(d)))
+
+check("a guarded gesture renders as a helper call, not a bare hl.gesture",
+  Lua.renderDoubleGesture(GUARDED)
+    === 'luddite.double({ fingers = 4, direction = "down", action = "close", '
+      + 'within_ms = 700, min_distance = 40, hint = "Swipe down again to close" })',
+  Lua.renderDoubleGesture(GUARDED))
+
+const guardedBody = Lua.renderBody([GUARDED], {}, Schema)
+check("the helper is written when something uses it",
+  guardedBody.indexOf("function luddite.double(s)") !== -1)
+check("the helper is not written when nothing does",
+  Lua.renderBody([{ fingers: 3, direction: "up", action: "close" }], {}, Schema)
+    .indexOf("luddite") === -1)
+check("the helper is written once, however many gestures use it",
+  Lua.renderBody([GUARDED, Object.assign({}, GUARDED, { fingers: 5 })], {}, Schema)
+    .split("function luddite.double").length === 2)
+
+// The line that makes the round trip work: under Hyprland the global is nil and
+// the helper defines itself; under read.lua it is a recorder, so the definition
+// is skipped and the calls report themselves as data.
+check("the helper defers to a `luddite` the reader can provide",
+  /^local luddite = luddite$/m.test(Lua.DOUBLE_HELPER)
+    && /^if not luddite then$/m.test(Lua.DOUBLE_HELPER))
+check("the helper only ever dispatches the argument-free dispatchers",
+  (Lua.DOUBLE_HELPER.match(/hl\.dsp\.window\.(close|float)\(\)/g) || []).length === 2
+    && Lua.DOUBLE_HELPER.indexOf("fullscreen") === -1)
+
+// A guarded gesture still registers as an ordinary gesture of that direction, so
+// it has to keep taking part in conflict detection.
+check("a guarded gesture still shadows and is shadowed",
+  Lua.findConflicts([
+    { fingers: 4, direction: "vertical", action: "workspace" },
+    Object.assign({}, GUARDED, { managed: true }),
+  ], Schema).length === 1)
+
+check("a guard on an action that cannot take one is an error",
+  Lua.findFieldErrors([Object.assign({}, GUARDED, { action: "fullscreen" })], Schema)
+    .some(e => e.text.indexOf("double swipe") !== -1))
+check("a guard with an out-of-range gap is an error",
+  Lua.findFieldErrors([Object.assign({}, GUARDED, { double_within_ms: 9000 })], Schema).length > 0)
+check("a well-formed guard is not an error",
+  Lua.findFieldErrors([GUARDED], Schema).length === 0)
 
 // ---------------------------------------------------------------------------
 console.log("\nfence splicing")
@@ -387,21 +464,30 @@ if (cardMatch) {
     trigger <= available,
     `line needs ${trigger}px, card offers ${available}px`)
 
-  // Line two: the action's fields. They are mutually exclusive -- no action
-  // asks for more than one -- so the widest case is a single wide control,
-  // indented under the line above.
-  const details = STYLE.dropdownWidth + STYLE.panelPadding
-  check("the detail line of a gesture row fits the card", details <= available,
-    `line needs ${details}px, card offers ${available}px`)
+  // Line two carries either the action's own field or the double-swipe guard,
+  // never both -- every guardable action has no fields of its own, which is the
+  // property that keeps this line to one case at a time.
   check("no action asks for more fields than the detail line was sized for",
     Schema.ACTIONS.every(a => a.fields.length <= 1),
     "widest: " + Math.max(...Schema.ACTIONS.map(a => a.fields.length)))
+  check("a guardable action brings no field of its own, so the two never collide",
+    Schema.GUARDABLE_ACTIONS.every(v => Schema.actionFields(v).length === 0))
+
+  const TOGGLE = 44
+  const detailField = STYLE.dropdownWidth + STYLE.panelPadding
+  // Guard: the toggle, the gap, the travel floor, and the hint.
+  const detailGuard = TOGGLE + 2 * STYLE.numberFieldWidth + STYLE.dropdownWidth
+    + 3 * STYLE.controlGap + STYLE.panelPadding
+  check("the detail line fits the card with an action field",
+    detailField <= available, `line needs ${detailField}px, card offers ${available}px`)
+  check("the detail line fits the card with the guard fully open",
+    detailGuard <= available, `line needs ${detailGuard}px, card offers ${available}px`)
 
   // And if a theme scales things up, the row must still be able to shrink
   // rather than shove the sections below it off-screen.
   const rowSrc = fs.readFileSync(path.join(root, "GestureRow.qml"), "utf8")
   check("every wide control in a row can shrink",
-    (rowSrc.match(/Layout\.minimumWidth/g) || []).length >= 7,
+    (rowSrc.match(/Layout\.minimumWidth/g) || []).length >= 11,
     "each Dropdown/TextField/MultiSelect needs a Layout.minimumWidth")
   check("no control in a row is pinned with a fixed width",
     !/^\s*width:\s*Style\.spacing\.dropdownWidth/m.test(rowSrc))
@@ -458,7 +544,7 @@ check("the delegate does not depend on modelData, which a count model has none o
 const SELF_ASSIGNING = [
   ["Dropdown", /value = Qt\.binding/g, 3],
   ["MultiSelect", /values = Qt\.binding/g, 1],
-  ["TextField", /text = Qt\.binding/g, 2],
+  ["TextField", /text = Qt\.binding/g, 3],
 ]
 for (const [what, pattern, count] of SELF_ASSIGNING) {
   check(`every ${what} in a row re-arms its binding after the user picks`,
@@ -553,6 +639,45 @@ if (!lua) {
   check("disable_inhibit survives a save even though no control edits it",
     Lua.renderGesture(inhibitBack.gestures[0]) === inhibit,
     "got " + Lua.renderGesture(inhibitBack.gestures[0]))
+
+  // The guard, end to end. This is the load-bearing one: the panel writes Lua
+  // that Hyprland runs and that read.lua must hand back as editable data, or the
+  // checkbox becomes a one-way door out of the dropdowns.
+  const guarded = Lua.renderBody([{
+    fingers: 4, direction: "down", action: "close", mods: "SUPER",
+    double: true, double_within_ms: 700, double_min_distance: 40,
+    double_hint: "Swipe down again to close",
+  }], {}, Schema)
+  const guardedBack = Lua.parseHarness(
+    execFileSync("lua", [path.join(root, "read.lua"), "-e", guarded], { encoding: "utf8" }))
+
+  check("a guarded gesture reads back as one gesture, not a callback",
+    guardedBack.gestures.length === 1 && guardedBack.gestures[0].custom === false,
+    JSON.stringify(guardedBack.gestures))
+  check("a guarded gesture reads back with its guard intact",
+    guardedBack.gestures[0].double === true
+      && guardedBack.gestures[0].double_within_ms === 700
+      && guardedBack.gestures[0].double_min_distance === 40
+      && guardedBack.gestures[0].double_hint === "Swipe down again to close")
+  check("a guarded gesture keeps its fingers, direction, action and mods",
+    guardedBack.gestures[0].fingers === 4
+      && guardedBack.gestures[0].direction === "down"
+      && guardedBack.gestures[0].action === "close"
+      && guardedBack.gestures[0].mods === "SUPER")
+  check("a guarded gesture survives a full round trip byte-for-byte",
+    Lua.renderBody(guardedBack.gestures, {}, Schema) === guarded)
+
+  // The helper must also be real Lua that runs, not just Lua that parses --
+  // under a plain interpreter the global is nil, so it defines itself and calls
+  // through to the hl stubs.
+  let helperRan = true
+  try {
+    execFileSync("lua", ["-e",
+      "hl = setmetatable({}, { __index = function() return function() end end })\n"
+      + "o = setmetatable({}, { __index = function() return function() end end })\n"
+      + guarded], { stdio: "pipe" })
+  } catch (e) { helperRan = false }
+  check("the helper defines itself and runs when no reader is present", helperRan)
 
   // A file that is not valid Lua must fail loudly rather than read as empty.
   let threw = false

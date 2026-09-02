@@ -71,15 +71,42 @@ the whole block, and no dropdown can hold a Lua function, so it would go. The
 panel now says so rather than listing it among the gestures it leaves alone —
 move it above the opening fence and it is yours again.
 
-### Double swipes
+## Twice, quickly
 
-There is no direction for one, and no field to add. Hyprland's gesture engine
-matches a single swipe: the closed set of directions is the ten above, and
-"twice, quickly" is not among them. A double swipe means holding the timing
-yourself, in a callback with `start`/`update`/`finish` — real, useful, and
-exactly the shape this panel refuses to pretend it can edit. Write it above the
-fence and the panel will read it, list it, and count it against your other
-gestures without touching it.
+Hyprland matches a single swipe. There is no double-swipe direction and no field
+to ask for one, so a "swipe again to confirm" guard has to be timed in Lua.
+
+That is a checkbox in the panel. Tick **Twice, quickly** on a gesture and it
+writes the timing helper into its own block, along with the gap you will accept
+between the two swipes, how far the fingers have to travel before a swipe counts
+at all, and the hint to show after the first one. Reading the block back gives
+you the gesture in the dropdowns again, not an opaque callback — the helper is
+written so that [`read.lua`](read.lua) can record its calls as data instead of
+running them, which is the same Lua-reads-Lua trick the rest of the panel uses.
+
+It is offered where it can be got right, and nowhere else:
+
+| | Guard offered | Why |
+|---|---|---|
+| `close`, `float` | yes | Discrete, and dispatched with no argument at all |
+| `fullscreen`, `special` | no | Their dispatchers take an argument whose Lua spelling could not be pinned down — `hl.dsp.window.fullscreen("0")` and `("1")` both produced plain fullscreen, so the argument appears to be ignored |
+| `workspace`, `move`, `resize`, `scroll_move`, `cursor_zoom` | no | Continuous: they track your fingers 1:1, and there is no "twice" to speak of |
+| any pinch | no | The guard measures finger travel out of each update's `delta`; a pinch reports its motion differently |
+
+Generating a call whose behaviour cannot be predicted into someone's window
+manager config is not worth a checkbox, so those cases simply do not offer one.
+
+A guarded gesture is still an ordinary gesture of its direction as far as
+Hyprland is concerned, so it shadows and is shadowed exactly like any other, and
+the conflict warnings above apply to it unchanged.
+
+### Anything more than that
+
+A double swipe is the one callback shape the panel writes for you. Everything
+else with state — a custom dispatcher, a gesture with its own submap, anything
+that has to remember more than "did this just happen" — is still yours to write
+above the fence. The panel will read it, list it under **Written by hand**, and
+count it against your other gestures without touching it.
 
 ## How it works
 

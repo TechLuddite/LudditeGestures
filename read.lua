@@ -9,6 +9,7 @@
 --
 --   g  <fingers>  <direction>  <action>  <mode>  <mods>  <workspace>  <custom>
 --      <scale>  <zoom_level>  <disable_inhibit>
+--      <double>  <within_ms>  <min_distance>  <hint>
 --   c  <key>  <type>  <value>
 --
 -- The three trailing gesture fields were added after the first release, so they
@@ -74,7 +75,8 @@ local recorded = {
       -- untouched is the only way a hand-written one survives a save.
       spec.scale or "",
       spec.zoom_level or "",
-      spec.disable_inhibit == true and "true" or "")
+      spec.disable_inhibit == true and "true" or "",
+      "", "", "", "")
   end,
 
   -- Only the gestures:* subtree is the panel's business.
@@ -88,6 +90,31 @@ local recorded = {
 
 hl = setmetatable(recorded, { __index = function() return inert() end })
 o = inert()
+
+-- A double swipe has to be timed in Lua, so the panel writes a helper into its
+-- block and calls it once per guarded gesture. The block opens with
+-- `local luddite = luddite`, which finds this recorder and skips the real
+-- definition -- so those calls report themselves as data here, and come back
+-- into the dropdowns as gestures rather than as an opaque callback.
+--
+-- This has to be a real global: the _G fallback below hands out inert tables for
+-- undefined names, and an inert table would silently record nothing.
+luddite = {
+  double = function(spec)
+    if type(spec) ~= "table" then return end
+    emit("g",
+      tonumber(spec.fingers) or 0,
+      spec.direction or "",
+      spec.action or "",
+      "", spec.mods or "", "",
+      false,          -- editable, not a callback the panel has to shy away from
+      "", "", "",
+      "true",
+      tonumber(spec.within_ms) or 0,
+      tonumber(spec.min_distance) or 0,
+      spec.hint or "")
+  end,
+}
 
 -- Undefined globals in a personal config must not abort the read.
 setmetatable(_G, { __index = function() return inert() end })

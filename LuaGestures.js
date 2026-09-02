@@ -58,6 +58,77 @@ function renderGesture(g) {
   return "hl.gesture({ " + parts.join(", ") + " })"
 }
 
+// ------------------------------------------------------- the double-swipe guard
+//
+// Hyprland has no double-swipe direction, so "twice, quickly" has to be timed in
+// Lua. The panel writes that Lua itself rather than leaving you to hand-write a
+// callback it would then refuse to manage.
+//
+// The trick that keeps it readable BOTH ways is the first line. Under Hyprland
+// the global `luddite` is nil, so the helper defines itself and registers real
+// gestures. Under read.lua the global is a recorder, so the definition is
+// skipped and every luddite.double(...) call reports its arguments as data --
+// which is how a guarded gesture comes back into the dropdowns instead of
+// reading as an opaque callback. Lua reading Lua, same as the rest.
+var DOUBLE_HELPER = [
+  "-- A double swipe is not something Hyprland matches on its own; this is what",
+  "-- Luddite Gestures writes so the guard can be a checkbox. Reading the block",
+  "-- back skips this definition, so the calls below stay editable in the panel.",
+  "local luddite = luddite",
+  "if not luddite then",
+  "  luddite = {}",
+  "  function luddite.double(s)",
+  "    local last, travelled = nil, 0",
+  "    hl.gesture({",
+  "      fingers = s.fingers,",
+  "      direction = s.direction,",
+  "      mods = s.mods,",
+  "      action = {",
+  "        start = function() travelled = 0 end,",
+  "        update = function(e)",
+  "          if e.delta then",
+  "            local dx, dy = e.delta.x or 0, e.delta.y or 0",
+  "            travelled = travelled + math.sqrt(dx * dx + dy * dy)",
+  "          end",
+  "        end,",
+  "        finish = function(e)",
+  "          if e.cancelled or travelled < (s.min_distance or 0) then return end",
+  "          local now = e.time_ms or 0",
+  "          if last and (now - last) <= (s.within_ms or 700) then",
+  "            last = nil",
+  "            if s.action == \"float\" then",
+  "              hl.dispatch(hl.dsp.window.float())",
+  "            else",
+  "              hl.dispatch(hl.dsp.window.close())",
+  "            end",
+  "          else",
+  "            last = now",
+  "            if s.hint and s.hint ~= \"\" then",
+  "              hl.dispatch(hl.dsp.exec_cmd(o.notify(s.hint)))",
+  "            end",
+  "          end",
+  "        end,",
+  "      },",
+  "    })",
+  "  end",
+  "end"
+].join("\n")
+
+function isDouble(g) { return !!(g && g.double) }
+
+function renderDoubleGesture(g) {
+  var parts = [
+    "fingers = " + luaNumber(g.fingers),
+    "direction = " + luaString(g.direction),
+    "action = " + luaString(g.action)
+  ]
+  if (g.mods) parts.push("mods = " + luaString(g.mods))
+  parts.push("within_ms = " + luaNumber(g.double_within_ms))
+  parts.push("min_distance = " + luaNumber(g.double_min_distance))
+  if (g.double_hint) parts.push("hint = " + luaString(g.double_hint))
+  return "luddite.double({ " + parts.join(", ") + " })"
+}
+
 // Only tunables that differ from the Hyprland default are written, so the block
 // does not pin values the user never chose.
 function renderTunables(tunables, schema) {
@@ -77,12 +148,22 @@ function renderTunables(tunables, schema) {
   return "hl.config({\n  gestures = {\n" + lines.join("\n") + "\n  },\n})"
 }
 
+// Gestures keep their file order whether or not they are guarded, because that
+// order is what decides which one Hyprland registers first. The helper is only
+// written when something actually uses it.
 function renderBody(gestures, tunables, schema) {
   var chunks = []
   var config = renderTunables(tunables, schema)
   if (config) chunks.push(config)
+
+  var list = gestures || []
+  var needsHelper = false
+  for (var i = 0; i < list.length; i++) if (isDouble(list[i])) { needsHelper = true; break }
+  if (needsHelper) chunks.push(DOUBLE_HELPER)
+
   var lines = []
-  for (var i = 0; i < (gestures || []).length; i++) lines.push(renderGesture(gestures[i]))
+  for (var k = 0; k < list.length; k++)
+    lines.push(isDouble(list[k]) ? renderDoubleGesture(list[k]) : renderGesture(list[k]))
   if (lines.length > 0) chunks.push(lines.join("\n"))
   return chunks.join("\n\n")
 }
@@ -133,6 +214,7 @@ function applyBlock(text, body) {
 //
 //   g  <fingers>  <direction>  <action>  <mode>  <mods>  <workspace_name>  <custom>
 //      <scale>  <zoom_level>  <disable_inhibit>
+//      <double>  <within_ms>  <min_distance>  <hint>
 //   c  <key>  <type>  <value>
 //
 // The last three arrived after the first release and are read defensively, so
@@ -154,7 +236,11 @@ function parseHarness(stdout) {
         custom: f[7] === "true",
         scale: f[8] ? Number(f[8]) || 0 : 0,
         zoom_level: f[9] || "",
-        disable_inhibit: f[10] === "true"
+        disable_inhibit: f[10] === "true",
+        double: f[11] === "true",
+        double_within_ms: f[12] ? Number(f[12]) || 0 : 0,
+        double_min_distance: f[13] ? Number(f[13]) || 0 : 0,
+        double_hint: f[14] || ""
       })
     } else if (f[0] === "c" && f.length >= 4) {
       result.tunables[f[1]] = f[2] === "number" ? Number(f[3])
@@ -232,6 +318,18 @@ function findFieldErrors(gestures, schema) {
       errors.push({ index: i, text: "Hyprland needs at least " + schema.FINGERS_MIN + " fingers" })
     else if (g.fingers > schema.FINGERS_MAX)
       errors.push({ index: i, text: "Hyprland takes at most " + schema.FINGERS_MAX + " fingers" })
+    // The guard is only offered where the generated Lua can be got right, so a
+    // gesture carrying it anywhere else came from a hand-edit and would write
+    // out a call the helper cannot honour.
+    if (g.double && !schema.canDouble(g.action, g.direction))
+      errors.push({ index: i, text: "A double swipe only guards "
+        + schema.GUARDABLE_ACTIONS.join(" or ") + ", and only on a swipe" })
+    if (g.double && !(Number(g.double_within_ms) >= schema.FIELDS.double_within_ms.min
+                      && Number(g.double_within_ms) <= schema.FIELDS.double_within_ms.max))
+      errors.push({ index: i, text: "The gap between the two swipes must be "
+        + schema.FIELDS.double_within_ms.min + "–"
+        + schema.FIELDS.double_within_ms.max + " ms" })
+
     var bad = schema.badModifier(g.mods)
     if (bad)
       errors.push({ index: i, text: '"' + bad + '" is not a modifier — the gesture would never fire' })

@@ -33,6 +33,12 @@ ColumnLayout {
   readonly property bool hasScale: fields.indexOf("scale") !== -1
   readonly property bool hasZoom: fields.indexOf("zoom_level") !== -1
 
+  // Hyprland matches one swipe at a time, so "twice, quickly" is a guard the
+  // panel writes as Lua. It is only offered where that Lua can be got right --
+  // see Schema.canDouble.
+  readonly property bool canDouble: Schema.canDouble(gesture.action || "", gesture.direction || "")
+  readonly property bool isDouble: canDouble && gesture.double === true
+
   // Hyprland types scale as a float between 0.1 and 10; a NumberField is
   // integer-only, so the row edits whole percent and converts at the boundary.
   readonly property int scalePercent:
@@ -131,7 +137,7 @@ ColumnLayout {
   RowLayout {
     Layout.fillWidth: true
     Layout.leftMargin: Style.spacing.huge
-    visible: row.fields.length > 0
+    visible: row.fields.length > 0 || row.canDouble
     spacing: Style.spacing.controlGap
 
     Dropdown {
@@ -231,6 +237,92 @@ ColumnLayout {
         onEditingFinished: {
           row.edited(row.rowIndex, "zoom_level", zoomLevel.text)
           text = Qt.binding(function () { return row.gesture.zoom_level || "" })
+        }
+      }
+    }
+
+    // ---- the double-swipe guard
+    ColumnLayout {
+      visible: row.canDouble
+      Layout.minimumWidth: visible ? Style.space(110) : 0
+      spacing: Style.spacing.labelGap
+
+      Text {
+        text: "Twice, quickly"
+        color: Qt.darker(row.foreground, 1.4)
+        font.family: row.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+
+      ToggleSwitch {
+        checked: row.isDouble
+        foreground: row.foreground
+        accent: row.accent
+        onToggled: row.edited(row.rowIndex, "double", !row.isDouble)
+      }
+    }
+
+    NumberField {
+      id: within
+      visible: row.isDouble
+      Layout.preferredWidth: visible ? Style.spacing.numberFieldWidth : 0
+      Layout.minimumWidth: visible ? Style.spacing.numberFieldWidth : 0
+      label: Schema.FIELDS.double_within_ms.label + " (" + Schema.FIELDS.double_within_ms.unit + ")"
+      value: Number(row.gesture.double_within_ms) || Schema.fieldDefault("double_within_ms")
+      from: Schema.FIELDS.double_within_ms.min
+      to: Schema.FIELDS.double_within_ms.max
+      stepSize: Schema.FIELDS.double_within_ms.step
+      foreground: row.foreground
+      accent: row.accent
+      fontFamily: row.fontFamily
+      onModified: row.edited(row.rowIndex, "double_within_ms", within.value)
+    }
+
+    NumberField {
+      id: travel
+      visible: row.isDouble
+      Layout.preferredWidth: visible ? Style.spacing.numberFieldWidth : 0
+      Layout.minimumWidth: visible ? Style.spacing.numberFieldWidth : 0
+      label: Schema.FIELDS.double_min_distance.label + " (" + Schema.FIELDS.double_min_distance.unit + ")"
+      value: Number(row.gesture.double_min_distance) || 0
+      from: Schema.FIELDS.double_min_distance.min
+      to: Schema.FIELDS.double_min_distance.max
+      stepSize: Schema.FIELDS.double_min_distance.step
+      foreground: row.foreground
+      accent: row.accent
+      fontFamily: row.fontFamily
+      onModified: row.edited(row.rowIndex, "double_min_distance", travel.value)
+    }
+
+    ColumnLayout {
+      visible: row.isDouble
+      Layout.fillWidth: visible
+      Layout.preferredWidth: visible ? Style.spacing.dropdownWidth : 0
+      Layout.maximumWidth: Style.spacing.dropdownWidth
+      Layout.minimumWidth: visible ? Style.space(120) : 0
+      spacing: Style.spacing.labelGap
+
+      Text {
+        text: Schema.FIELDS.double_hint.label
+        color: Qt.darker(row.foreground, 1.4)
+        font.family: row.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+
+      TextField {
+        id: hint
+        Layout.fillWidth: true
+        placeholderText: Schema.FIELDS.double_hint.placeholder
+        text: row.gesture.double_hint || ""
+        foreground: row.foreground
+        accent: row.accent
+        font.family: row.fontFamily
+        font.pixelSize: Style.font.body
+        onEditingFinished: {
+          row.edited(row.rowIndex, "double_hint", hint.text)
+          text = Qt.binding(function () { return row.gesture.double_hint || "" })
         }
       }
     }
