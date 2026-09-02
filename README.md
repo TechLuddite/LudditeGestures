@@ -157,6 +157,11 @@ node test/run.js          # pure-JS tests for the renderer, parser and conflicts
 omarchy plugin validate . # the same checks the shell enforces at install
 ```
 
+[`CLAUDE.md`](CLAUDE.md) is the working-notes file: how facts about Hyprland get
+measured rather than quoted, what the panel is and is not allowed to touch, and
+the two QML traps that cost real time. Read it before changing how the block is
+written.
+
 Saving a file under `~/.config/omarchy/plugins/` hot-reloads plugin code, but it
 does not re-instantiate a panel the shell has already created. A layout change
 looks like it did nothing until `omarchy restart shell`, which is a good way to
